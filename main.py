@@ -426,6 +426,91 @@ def api_u36_alerts():
     return jsonify({"data": alerts})
 
 
+@app.route("/api/u36/late-reviews")
+def api_u36_late_reviews():
+    """Return jobs reviewed after 36 hours (TAT violations)."""
+    groups = _fetch_response_groups()
+
+    violations_map = {}
+    for group in groups:
+        submission = group.get("submission_date")
+        review_time = group.get("first_review_ts")
+        job_id = group.get("job_id")
+        group_id = group.get("id")
+
+        # Only include reviewed groups
+        if not review_time:
+            continue
+
+        submission_seconds = _parse_iso_datetime(submission)
+        review_seconds = _parse_iso_datetime(review_time)
+
+        if submission_seconds is None or review_seconds is None:
+            continue
+
+        # Calculate time to review (submission_seconds is age from now, review_seconds is age from now)
+        # We need actual times, not ages. Recalculate properly.
+        try:
+            from datetime import timedelta
+            from email.utils import parsedate_to_datetime
+
+            # Parse submission time
+            try:
+                sub_dt = datetime.fromisoformat(submission.replace("Z", "+00:00"))
+            except:
+                sub_dt = parsedate_to_datetime(submission)
+
+            # Parse review time
+            try:
+                rev_dt = datetime.fromisoformat(review_time.replace("Z", "+00:00"))
+            except:
+                rev_dt = parsedate_to_datetime(review_time)
+
+            tat_seconds = (rev_dt - sub_dt).total_seconds()
+            tat_hours = _seconds_to_hours(tat_seconds)
+        except Exception as e:
+            logging.warning(f"Failed to calc TAT for group {group_id}: {e}")
+            continue
+
+        if not (tat_hours and tat_hours >= 36):
+            continue
+
+        # Group by job, track worst (longest TAT) group_id
+        if job_id not in violations_map:
+            violations_map[job_id] = {
+                "job_id": job_id,
+                "project_id": group.get("project_id"),
+                "vendor": group.get("tp_review_company") or "Internal",
+                "tat_hours": tat_hours,
+                "group_id": group_id,
+                "count": 0,
+            }
+        else:
+            if tat_hours > violations_map[job_id]["tat_hours"]:
+                violations_map[job_id]["tat_hours"] = tat_hours
+                violations_map[job_id]["group_id"] = group_id
+        violations_map[job_id]["count"] += 1
+
+    violations = [
+        {
+            "id": str(v["job_id"]),
+            "projectName": _get_project_name(v["project_id"]),
+            "vendor": v["vendor"],
+            "responseCount": v["count"],
+            "tatHours": v["tat_hours"],
+            "groupId": v["group_id"],
+            "severity": "critical" if v["tat_hours"] >= 72 else "warning",
+        }
+        for v in violations_map.values()
+    ]
+
+    # Sort by TAT hours (worst first)
+    violations.sort(key=lambda x: -x["tatHours"])
+
+    logging.info(f"GET /api/u36/late-reviews by={g.user.get('email')} count={len(violations)}")
+    return jsonify({"data": violations})
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)

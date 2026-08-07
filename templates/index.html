@@ -206,6 +206,9 @@
             <div class="tab" :class="{ active: currentTab === 'alerts' }" @click="currentTab = 'alerts'">
                 🚨 Alerts
             </div>
+            <div class="tab" :class="{ active: currentTab === 'late-reviews' }" @click="currentTab = 'late-reviews'">
+                ⏱️ Late Reviews
+            </div>
             <div class="tab" :class="{ active: currentTab === 'queue' }" @click="currentTab = 'queue'">
                 📋 Job Queue
             </div>
@@ -251,6 +254,49 @@
                             </td>
                             <td>{{ alert.pendingCount }}</td>
                             <td>{{ alert.activeReviewers }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- LATE REVIEWS TAB -->
+        <div class="dashboard" :class="{ active: currentTab === 'late-reviews' }">
+            <div class="refreshing">Last refresh: {{ lastRefresh }}</div>
+            <div v-if="error" class="error">{{ error }}</div>
+
+            <div v-if="lateReviews.length === 0" class="empty">
+                <p>✓ No TAT violations (reviews > 36 hours)</p>
+            </div>
+
+            <div v-else class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Job Name</th>
+                            <th>Project</th>
+                            <th>Vendor</th>
+                            <th>TAT (hours)</th>
+                            <th>Responses</th>
+                            <th>Severity</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="review in lateReviews" :key="review.id">
+                            <td>
+                                <a :href="`https://my.fieldagent.net/admin/fieldagent/responseSearch/?group_id=${review.groupId}`" target="_blank" style="color: #0ea5e9; text-decoration: none;">
+                                    {{ review.name }}
+                                </a>
+                            </td>
+                            <td>{{ review.projectName }}</td>
+                            <td>{{ review.vendor }}</td>
+                            <td>
+                                <span class="badge" :class="review.severity === 'critical' ? 'critical' : 'warning'">
+                                    {{ review.tatHours }}h
+                                </span>
+                            </td>
+                            <td>{{ review.responseCount }}</td>
+                            <td>{{ review.severity }}</td>
                         </tr>
                     </tbody>
                 </table>
@@ -399,6 +445,7 @@ createApp({
             currentTab: 'alerts',
             jobs: [],
             alerts: [],
+            lateReviews: [],
             bottlenecks: [],
             loading: false,
             error: null,
@@ -437,19 +484,26 @@ createApp({
             this.loading = true;
             this.error = null;
             try {
-                const [jobsResp, alertsResp, bottlenecksResp] = await Promise.all([
+                const [jobsResp, alertsResp, lateReviewsResp, bottlenecksResp] = await Promise.all([
                     fetch('/api/u36/jobs'),
                     fetch('/api/u36/alerts'),
+                    fetch('/api/u36/late-reviews'),
                     fetch('/api/u36/bottlenecks'),
                 ]);
 
-                if (!jobsResp.ok || !alertsResp.ok || !bottlenecksResp.ok) {
+                if (!jobsResp.ok || !alertsResp.ok || !lateReviewsResp.ok || !bottlenecksResp.ok) {
                     throw new Error('Failed to fetch data');
                 }
 
                 this.jobs = (await jobsResp.json()).data || [];
                 this.alerts = (await alertsResp.json()).data || [];
+                this.lateReviews = (await lateReviewsResp.json()).data || [];
                 this.bottlenecks = (await bottlenecksResp.json()).data || [];
+
+                // Enrich late reviews with job names
+                for (let review of this.lateReviews) {
+                    review.name = this.getJobName(review.id);
+                }
 
                 const now = new Date();
                 this.lastRefresh = now.toLocaleTimeString();
@@ -458,6 +512,11 @@ createApp({
             } finally {
                 this.loading = false;
             }
+        },
+        getJobName(jobId) {
+            // Try to find in jobs array
+            const job = this.jobs.find(j => j.id === jobId);
+            return job ? job.jobName : `Job ${jobId}`;
         },
     },
     mounted() {
