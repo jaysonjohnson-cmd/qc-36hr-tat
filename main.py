@@ -58,10 +58,10 @@ def _fetch_response_groups():
         return _BLOOM_CACHE["jobs"]
 
     try:
-        # Fetch response groups from last 36 hours
+        # Fetch response groups from last 28 hours
         from datetime import timedelta
         now = datetime.now()
-        date_from = (now - timedelta(hours=36)).isoformat()
+        date_from = (now - timedelta(hours=28)).isoformat()
 
         result = get(
             "/api/responsegroups",
