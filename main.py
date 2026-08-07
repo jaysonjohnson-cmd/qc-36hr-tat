@@ -60,8 +60,8 @@ def _fetch_response_groups():
     try:
         # Fetch response groups from last 28 hours
         from datetime import timedelta
-        now = datetime.now()
-        date_from = (now - timedelta(hours=28)).isoformat()
+        now_dt = datetime.now()
+        date_from = (now_dt - timedelta(hours=28)).isoformat()
 
         result = get(
             "/api/responsegroups",
