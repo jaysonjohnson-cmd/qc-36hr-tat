@@ -317,7 +317,7 @@
                         <tr v-for="job in filteredJobs" :key="job.id">
                             <td>
                                 {{ job.jobName }}
-                                <a :href="`https://app.fieldagent.net/jobs/${job.id}`" target="_blank" style="color: #0ea5e9; text-decoration: none; margin-left: 8px;">
+                                <a :href="`https://my.fieldagent.net/admin/fieldagent/collection-review/?job=${job.id}&project=${job.projectId}#/`" target="_blank" style="color: #0ea5e9; text-decoration: none; margin-left: 8px;">
                                     ({{ job.id }})
                                 </a>
                             </td>
