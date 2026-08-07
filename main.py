@@ -9,6 +9,7 @@ import jwt
 import requests
 from flask import Flask, jsonify, redirect, request, g, send_file
 from werkzeug.middleware.proxy_fix import ProxyFix
+from internal_api import get
 
 logging.basicConfig(level=logging.INFO)
 
@@ -35,7 +36,17 @@ def _get_auth_header():
     if LOCAL_DEV:
         token = _dev_token_path().read_text().strip()
     else:
-        token = os.environ.get("OIDC_TOKEN", "")
+        # In production, get OIDC token from Cloud Run metadata server
+        try:
+            import google.auth
+            import google.auth.transport.requests
+            credentials, _ = google.auth.default()
+            request = google.auth.transport.requests.Request()
+            credentials.refresh(request)
+            token = credentials.token
+        except Exception as e:
+            logging.error(f"Failed to get OIDC token: {e}")
+            token = ""
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -51,18 +62,15 @@ def _fetch_response_groups():
         today = datetime.now().date()
         date_from = (today - timedelta(days=4)).isoformat()
 
-        resp = requests.get(
-            f"{INTERNAL_API_BASE}/api/responsegroups",
-            headers=_get_auth_header(),
+        result = get(
+            "/api/responsegroups",
             params={
                 "submission_date_from": date_from,
                 "per_page": 100,
                 "sort": "-submission_date"
-            },
-            timeout=30
+            }
         )
-        resp.raise_for_status()
-        groups = resp.json().get("data", [])
+        groups = result.get("data", [])
         _BLOOM_CACHE["jobs"] = groups
         _BLOOM_CACHE["fetched_at"] = now
         logging.info(f"Fetched {len(groups)} response groups from FieldAgent")
