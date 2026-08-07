@@ -58,27 +58,27 @@ def _fetch_response_groups():
         return _BLOOM_CACHE["jobs"]
 
     try:
-        # Fetch response groups from last 28 hours
-        from datetime import timedelta
-        now_dt = datetime.now()
-        date_from = (now_dt - timedelta(hours=28)).isoformat()
+        # Fetch response groups from last 7 days
+        from datetime import timedelta, datetime as dt
+        now_dt = dt.now()
+        date_from = (now_dt - timedelta(days=7)).isoformat()
 
         result = get(
             "/api/responsegroups",
             params={
                 "submission_date_from": date_from,
-                "per_page": 100,
+                "per_page": 500,
                 "sort": "-submission_date"
             }
         )
         groups = result.get("data", [])
         _BLOOM_CACHE["jobs"] = groups
         _BLOOM_CACHE["fetched_at"] = now
-        logging.info(f"Fetched {len(groups)} response groups from FieldAgent")
+        logging.info(f"Fetched {len(groups)} response groups")
         return groups
     except Exception as e:
         logging.error(f"Failed to fetch response groups: {e}")
-        return _BLOOM_CACHE["jobs"] or []
+        return []
 
 
 def _parse_iso_datetime(dt_str):
