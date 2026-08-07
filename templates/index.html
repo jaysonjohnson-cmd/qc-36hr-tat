@@ -409,7 +409,12 @@
                     </thead>
                     <tbody>
                         <tr v-for="bn in bottlenecks" :key="bn.project">
-                            <td>{{ bn.project }}</td>
+                            <td>
+                                <a v-if="bn.topJobId && bn.projectId" :href="`https://my.fieldagent.net/admin/fieldagent/collection-review/?job=${bn.topJobId}&project=${bn.projectId}#/`" target="_blank" style="color: #0ea5e9; text-decoration: none;">
+                                    {{ bn.project }}
+                                </a>
+                                <span v-else>{{ bn.project }}</span>
+                            </td>
                             <td>
                                 <span class="badge" :class="bn.pendingSubmissions > 100 ? 'critical' : bn.pendingSubmissions > 50 ? 'warning' : 'ok'">
                                     {{ bn.pendingSubmissions }}

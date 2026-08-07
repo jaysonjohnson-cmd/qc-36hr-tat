@@ -316,6 +316,9 @@ def api_u36_bottlenecks():
         "avgAge": 0,
         "jobCount": set(),
         "vendors": defaultdict(int),
+        "project_id": None,
+        "top_job_id": None,
+        "top_job_pending": 0,
     })
 
     ages_by_project = defaultdict(list)
@@ -335,6 +338,7 @@ def api_u36_bottlenecks():
         age_hours = _seconds_to_hours(age_seconds)
 
         bottlenecks[project]["pending"] += 1
+        bottlenecks[project]["project_id"] = project_id
         bottlenecks[project]["jobCount"].add(job_id)
         bottlenecks[project]["vendors"][vendor] += 1
 
@@ -344,6 +348,23 @@ def api_u36_bottlenecks():
         if age_hours:
             ages_by_project[project].append(age_hours)
 
+    # Find top job per project (most pending)
+    for group in groups:
+        if group.get("first_review_ts"):
+            continue
+        project = _get_project_name(group.get("project_id", "unknown"))
+        job_id = group.get("job_id")
+        if project in bottlenecks:
+            # Count pending per job for this project
+            job_key = f"{project}_{job_id}"
+            if not hasattr(api_u36_bottlenecks, "_job_counts"):
+                api_u36_bottlenecks._job_counts = defaultdict(int)
+            api_u36_bottlenecks._job_counts[job_key] += 1
+
+            if api_u36_bottlenecks._job_counts[job_key] > bottlenecks[project]["top_job_pending"]:
+                bottlenecks[project]["top_job_pending"] = api_u36_bottlenecks._job_counts[job_key]
+                bottlenecks[project]["top_job_id"] = job_id
+
     # Calculate average age per project
     for project, ages in ages_by_project.items():
         if ages:
@@ -352,6 +373,8 @@ def api_u36_bottlenecks():
     result = [
         {
             "project": project,
+            "projectId": data["project_id"],
+            "topJobId": data["top_job_id"],
             "pendingSubmissions": data["pending"],
             "jobsStuck": data["stuck"],
             "jobCount": len(data["jobCount"]),
