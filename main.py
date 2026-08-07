@@ -75,13 +75,6 @@ def _fetch_response_groups():
         _BLOOM_CACHE["jobs"] = groups
         _BLOOM_CACHE["fetched_at"] = now
         logging.info(f"Fetched {len(groups)} response groups from FieldAgent")
-
-        # Log sample group to see what fields are available
-        if groups:
-            sample = groups[0]
-            logging.info(f"SAMPLE RESPONSE GROUP: {sample}")
-            logging.info(f"FIELDS: {list(sample.keys())}")
-
         return groups
     except Exception as e:
         logging.error(f"Failed to fetch response groups: {e}")
@@ -247,29 +240,6 @@ def logout():
 @app.route("/")
 def index():
     return send_file("templates/index.html", mimetype="text/html")
-
-
-@app.route("/api/debug/sample-group")
-def debug_sample_group():
-    """Return a sample response group for debugging."""
-    groups = _fetch_response_groups()
-
-    # Find a reviewed group
-    reviewed_group = None
-    unreviewed_group = None
-    for g in groups:
-        if g.get("first_review_ts"):
-            reviewed_group = g
-            break
-        if not unreviewed_group:
-            unreviewed_group = g
-
-    return jsonify({
-        "reviewed_sample": reviewed_group,
-        "unreviewed_sample": unreviewed_group,
-        "total_groups": len(groups),
-        "reviewed_count": sum(1 for g in groups if g.get("first_review_ts")),
-    })
 
 
 @app.route("/api/u36/jobs")
