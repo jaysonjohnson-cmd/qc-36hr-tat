@@ -249,6 +249,15 @@ def index():
     return send_file("templates/index.html", mimetype="text/html")
 
 
+@app.route("/api/debug/sample-group")
+def debug_sample_group():
+    """Return a sample response group for debugging."""
+    groups = _fetch_response_groups()
+    if groups:
+        return jsonify({"sample": groups[0]})
+    return jsonify({"sample": None})
+
+
 @app.route("/api/u36/jobs")
 def api_u36_jobs():
     """Return response groups with submission age, sorted by oldest first."""
