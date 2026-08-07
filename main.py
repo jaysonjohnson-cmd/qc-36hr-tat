@@ -454,7 +454,10 @@ def api_u36_late_reviews():
     """Return jobs reviewed after 36 hours (TAT violations)."""
     groups = _fetch_response_groups()
 
+    logging.info(f"Late reviews: checking {len(groups)} groups")
+
     violations_map = {}
+    reviewed_count = 0
     for group in groups:
         submission = group.get("submission_date")
         review_time = group.get("first_review_ts")
@@ -465,29 +468,26 @@ def api_u36_late_reviews():
         if not review_time:
             continue
 
-        submission_seconds = _parse_iso_datetime(submission)
-        review_seconds = _parse_iso_datetime(review_time)
+        reviewed_count += 1
 
-        if submission_seconds is None or review_seconds is None:
-            continue
-
-        # Calculate time to review (submission_seconds is age from now, review_seconds is age from now)
-        # We need actual times, not ages. Recalculate properly.
+        # Calculate time to review
         try:
-            from datetime import timedelta
             from email.utils import parsedate_to_datetime
 
             # Parse submission time
             try:
                 sub_dt = datetime.fromisoformat(submission.replace("Z", "+00:00"))
             except:
-                sub_dt = parsedate_to_datetime(submission)
+                sub_dt = parsedate_to_datetime(submission) if submission else None
 
             # Parse review time
             try:
                 rev_dt = datetime.fromisoformat(review_time.replace("Z", "+00:00"))
             except:
-                rev_dt = parsedate_to_datetime(review_time)
+                rev_dt = parsedate_to_datetime(review_time) if review_time else None
+
+            if not sub_dt or not rev_dt:
+                continue
 
             tat_seconds = (rev_dt - sub_dt).total_seconds()
             tat_hours = _seconds_to_hours(tat_seconds)
@@ -530,7 +530,7 @@ def api_u36_late_reviews():
     # Sort by TAT hours (worst first)
     violations.sort(key=lambda x: -x["tatHours"])
 
-    logging.info(f"GET /api/u36/late-reviews by={g.user.get('email')} count={len(violations)}")
+    logging.info(f"GET /api/u36/late-reviews by={g.user.get('email')} reviewed={reviewed_count} violations={len(violations)}")
     return jsonify({"data": violations})
 
 
