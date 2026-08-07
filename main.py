@@ -78,12 +78,9 @@ def _fetch_response_groups():
 
         # Log sample group to see what fields are available
         if groups:
-            logging.info(f"SAMPLE RESPONSE GROUP FIELDS: {list(groups[0].keys())}")
-            # Log a group that has a review timestamp to see the structure
-            for g in groups[:5]:
-                if g.get("first_review_ts") or g.get("reviewed_at") or g.get("review_time"):
-                    logging.info(f"GROUP WITH REVIEW: {g}")
-                    break
+            sample = groups[0]
+            logging.info(f"SAMPLE RESPONSE GROUP: {sample}")
+            logging.info(f"FIELDS: {list(sample.keys())}")
 
         return groups
     except Exception as e:
