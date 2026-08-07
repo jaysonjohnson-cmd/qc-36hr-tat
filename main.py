@@ -57,10 +57,10 @@ def _fetch_response_groups():
         return _BLOOM_CACHE["jobs"]
 
     try:
-        # Fetch response groups from last 4 days (covers 2-3 day bucket)
+        # Fetch response groups from last 10 days (covers all age buckets)
         from datetime import timedelta
         today = datetime.now().date()
-        date_from = (today - timedelta(days=4)).isoformat()
+        date_from = (today - timedelta(days=10)).isoformat()
 
         result = get(
             "/api/responsegroups",
