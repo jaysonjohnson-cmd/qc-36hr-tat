@@ -258,6 +258,27 @@
             <div class="refreshing">Last refresh: {{ lastRefresh }}</div>
             <div v-if="error" class="error">{{ error }}</div>
 
+            <div style="margin-bottom: 20px; display: flex; gap: 15px; flex-wrap: wrap; align-items: center;">
+                <input
+                    v-model="filters.search"
+                    type="text"
+                    placeholder="Search job names..."
+                    style="flex: 1; min-width: 200px; padding: 8px; border: 1px solid #334155; border-radius: 4px; background: #1e293b; color: #e2e8f0;"
+                >
+                <select
+                    v-model="filters.vendor"
+                    style="padding: 8px; border: 1px solid #334155; border-radius: 4px; background: #1e293b; color: #e2e8f0;"
+                >
+                    <option value="">All Vendors</option>
+                    <option value="Internal">Internal</option>
+                    <option value="CF">Cloud Factory</option>
+                </select>
+                <label style="display: flex; align-items: center; gap: 8px; color: #94a3b8;">
+                    <input v-model="filters.stuckOnly" type="checkbox">
+                    Stuck only (36h+)
+                </label>
+            </div>
+
             <div class="kpi-grid">
                 <div class="kpi-card">
                     <div class="kpi-label">Total Jobs in Queue</div>
@@ -293,8 +314,13 @@
                         </tr>
                     </thead>
                     <tbody>
-                        <tr v-for="job in jobs" :key="job.id">
-                            <td>{{ job.jobName }} <span style="color: #94a3b8;">({{ job.id }})</span></td>
+                        <tr v-for="job in filteredJobs" :key="job.id">
+                            <td>
+                                {{ job.jobName }}
+                                <a :href="`https://app.fieldagent.net/jobs/${job.id}`" target="_blank" style="color: #0ea5e9; text-decoration: none; margin-left: 8px;">
+                                    ({{ job.id }})
+                                </a>
+                            </td>
                             <td>{{ job.projectName }}</td>
                             <td>{{ job.pendingCount }}</td>
                             <td>
@@ -373,17 +399,31 @@ createApp({
             loading: false,
             error: null,
             lastRefresh: '—',
+            filters: {
+                search: '',
+                vendor: '',
+                stuckOnly: false,
+            },
         };
     },
     computed: {
+        filteredJobs() {
+            return this.jobs.filter(job => {
+                const matchesSearch = job.jobName.toLowerCase().includes(this.filters.search.toLowerCase()) ||
+                    job.id.toString().includes(this.filters.search);
+                const matchesVendor = !this.filters.vendor || job.vendor === this.filters.vendor;
+                const matchesStuck = !this.filters.stuckOnly || job.oldestSubmissionStuck;
+                return matchesSearch && matchesVendor && matchesStuck;
+            });
+        },
         totalPending() {
-            return this.jobs.reduce((sum, job) => sum + job.pendingCount, 0);
+            return this.filteredJobs.reduce((sum, job) => sum + job.pendingCount, 0);
         },
         stuckCount() {
-            return this.jobs.filter(job => job.oldestSubmissionStuck).length;
+            return this.filteredJobs.filter(job => job.oldestSubmissionStuck).length;
         },
         avgAge() {
-            const ages = this.jobs.filter(job => job.oldestSubmissionAge).map(job => job.oldestSubmissionAge);
+            const ages = this.filteredJobs.filter(job => job.oldestSubmissionAge).map(job => job.oldestSubmissionAge);
             if (ages.length === 0) return '—';
             return (ages.reduce((a, b) => a + b, 0) / ages.length).toFixed(1);
         },
