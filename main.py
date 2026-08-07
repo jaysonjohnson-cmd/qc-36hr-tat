@@ -39,38 +39,58 @@ def _get_auth_header():
     return {"Authorization": f"Bearer {token}"}
 
 
-def _fetch_bloom_jobs():
-    """Fetch prioritized jobs from Bloom API via Internal API."""
+def _fetch_response_groups():
+    """Fetch response groups with submission timestamps from FieldAgent API."""
     now = time.time()
     if _BLOOM_CACHE["jobs"] and (now - _BLOOM_CACHE["fetched_at"]) < _CACHE_TTL:
         return _BLOOM_CACHE["jobs"]
 
     try:
+        # Fetch response groups from last 4 days (covers 2-3 day bucket)
+        from datetime import timedelta
+        today = datetime.now().date()
+        date_from = (today - timedelta(days=4)).isoformat()
+
         resp = requests.get(
-            f"{INTERNAL_API_BASE}/api/prioritized-jobs",
+            f"{INTERNAL_API_BASE}/api/responsegroups",
             headers=_get_auth_header(),
+            params={
+                "submission_date_from": date_from,
+                "per_page": 100,
+                "sort": "-submission_date"
+            },
             timeout=30
         )
         resp.raise_for_status()
-        jobs = resp.json().get("data", [])
-        _BLOOM_CACHE["jobs"] = jobs
+        groups = resp.json().get("data", [])
+        _BLOOM_CACHE["jobs"] = groups
         _BLOOM_CACHE["fetched_at"] = now
-        logging.info(f"Fetched {len(jobs)} jobs from Bloom")
-        return jobs
+        logging.info(f"Fetched {len(groups)} response groups from FieldAgent")
+        return groups
     except Exception as e:
-        logging.error(f"Failed to fetch Bloom jobs: {e}")
+        logging.error(f"Failed to fetch response groups: {e}")
         return _BLOOM_CACHE["jobs"] or []
 
 
 def _parse_iso_datetime(dt_str):
-    """Parse ISO datetime string, return seconds ago or None."""
+    """Parse datetime string (RFC 2822 or ISO format), return seconds ago or None."""
     if not dt_str:
         return None
     try:
-        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-        age_seconds = (datetime.now(dt.tzinfo) - dt).total_seconds()
+        # Try ISO format first
+        try:
+            dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        except:
+            # Try RFC 2822 format: "Fri, 07 Aug 2026 14:34:02 GMT"
+            from email.utils import parsedate_to_datetime
+            dt = parsedate_to_datetime(dt_str)
+
+        # Make timezone-aware comparison
+        now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+        age_seconds = (now - dt).total_seconds()
         return max(0, age_seconds)
-    except:
+    except Exception as e:
+        logging.warning(f"Failed to parse datetime '{dt_str}': {e}")
         return None
 
 
@@ -161,33 +181,55 @@ def index():
 
 @app.route("/api/u36/jobs")
 def api_u36_jobs():
-    """Return jobs with submission age, sorted by oldest first."""
-    jobs = _fetch_bloom_jobs()
+    """Return response groups with submission age, sorted by oldest first."""
+    groups = _fetch_response_groups()
 
-    result = []
-    for job in jobs:
-        new_count = int(job.get("new") or 0)
-        if new_count == 0:
+    # Group by job_id to get oldest submission per job
+    jobs_map = {}
+    for group in groups:
+        job_id = group.get("job_id")
+        if not job_id:
             continue
 
-        oldest_sub = job.get("oldestSubmission")
-        age_seconds = _parse_iso_datetime(oldest_sub)
+        # Skip reviewed groups
+        first_review = group.get("first_review_ts")
+        if first_review:
+            continue
+
+        # Skip test/screener/ticket jobs (status-based filtering)
+        status = group.get("status", "")
+        if status in ("D", "R"):  # Denied or rejected
+            continue
+
+        submission = group.get("submission_date")
+        if not submission:
+            continue
+
+        if job_id not in jobs_map:
+            jobs_map[job_id] = {
+                "job_id": job_id,
+                "project_id": group.get("project_id"),
+                "submission_date": submission,
+                "tp_review_company": group.get("tp_review_company"),
+                "count": 0,
+            }
+        jobs_map[job_id]["count"] += 1
+
+    result = []
+    for job_id, job_data in jobs_map.items():
+        age_seconds = _parse_iso_datetime(job_data["submission_date"])
         age_hours = _seconds_to_hours(age_seconds)
 
         result.append({
-            "id": str(job.get("id", "")),
-            "name": job.get("name", ""),
-            "projectId": job.get("project_id", ""),
-            "projectName": _get_project_name(job),
-            "vendor": _get_vendor(job),
-            "pendingCount": new_count,
+            "id": str(job_id),
+            "projectId": job_data["project_id"],
+            "vendor": job_data["tp_review_company"] or "Internal",
+            "pendingCount": job_data["count"],
             "oldestSubmissionAge": age_hours,
             "oldestSubmissionStuck": age_hours >= 36 if age_hours else None,
-            "activeReviewers": job.get("activeReviewers", 0),
-            "priority": job.get("priority", 0),
         })
 
-    # Sort by age (oldest first), then by pending count
+    # Sort by age (oldest first)
     result.sort(key=lambda x: (
         x["oldestSubmissionAge"] is None,
         -(x["oldestSubmissionAge"] or 0),
@@ -201,31 +243,34 @@ def api_u36_jobs():
 @app.route("/api/u36/bottlenecks")
 def api_u36_bottlenecks():
     """Return bottleneck analysis by project and vendor."""
-    jobs = _fetch_bloom_jobs()
+    groups = _fetch_response_groups()
 
     bottlenecks = defaultdict(lambda: {
         "pending": 0,
         "stuck": 0,
         "avgAge": 0,
-        "jobCount": 0,
+        "jobCount": set(),
         "vendors": defaultdict(int),
     })
 
     ages_by_project = defaultdict(list)
 
-    for job in jobs:
-        new_count = int(job.get("new") or 0)
-        if new_count == 0:
+    for group in groups:
+        # Skip reviewed groups
+        if group.get("first_review_ts"):
             continue
 
-        project = _get_project_name(job)
-        vendor = _get_vendor(job)
-        oldest_sub = job.get("oldestSubmission")
-        age_seconds = _parse_iso_datetime(oldest_sub)
+        project_id = group.get("project_id", "unknown")
+        project = f"Project {project_id}"
+        vendor = group.get("tp_review_company") or "Internal"
+        submission = group.get("submission_date")
+        job_id = group.get("job_id")
+
+        age_seconds = _parse_iso_datetime(submission)
         age_hours = _seconds_to_hours(age_seconds)
 
-        bottlenecks[project]["pending"] += new_count
-        bottlenecks[project]["jobCount"] += 1
+        bottlenecks[project]["pending"] += 1
+        bottlenecks[project]["jobCount"].add(job_id)
         bottlenecks[project]["vendors"][vendor] += 1
 
         if age_hours and age_hours >= 36:
@@ -244,7 +289,7 @@ def api_u36_bottlenecks():
             "project": project,
             "pendingSubmissions": data["pending"],
             "jobsStuck": data["stuck"],
-            "jobCount": data["jobCount"],
+            "jobCount": len(data["jobCount"]),
             "avgAge": data["avgAge"],
             "vendors": dict(data["vendors"]),
         }
@@ -260,30 +305,46 @@ def api_u36_bottlenecks():
 
 @app.route("/api/u36/alerts")
 def api_u36_alerts():
-    """Return jobs stuck >36 hours with pending submissions."""
-    jobs = _fetch_bloom_jobs()
+    """Return response groups stuck >36 hours."""
+    groups = _fetch_response_groups()
 
-    alerts = []
-    for job in jobs:
-        new_count = int(job.get("new") or 0)
-        if new_count == 0:
+    alerts_map = {}
+    for group in groups:
+        # Skip reviewed groups
+        if group.get("first_review_ts"):
             continue
 
-        oldest_sub = job.get("oldestSubmission")
-        age_seconds = _parse_iso_datetime(oldest_sub)
+        submission = group.get("submission_date")
+        job_id = group.get("job_id")
+
+        age_seconds = _parse_iso_datetime(submission)
         age_hours = _seconds_to_hours(age_seconds)
 
-        if age_hours and age_hours >= 36:
-            alerts.append({
-                "id": str(job.get("id", "")),
-                "name": job.get("name", ""),
-                "projectName": _get_project_name(job),
-                "vendor": _get_vendor(job),
-                "pendingCount": new_count,
-                "stuckHours": age_hours,
-                "activeReviewers": job.get("activeReviewers", 0),
-                "severity": "critical" if age_hours >= 72 else "warning",
-            })
+        if not (age_hours and age_hours >= 36):
+            continue
+
+        # Group by job to deduplicate
+        if job_id not in alerts_map:
+            alerts_map[job_id] = {
+                "job_id": job_id,
+                "project_id": group.get("project_id"),
+                "vendor": group.get("tp_review_company") or "Internal",
+                "age_hours": age_hours,
+                "count": 0,
+            }
+        alerts_map[job_id]["count"] += 1
+
+    alerts = [
+        {
+            "id": str(alert["job_id"]),
+            "projectName": f"Project {alert['project_id']}",
+            "vendor": alert["vendor"],
+            "pendingCount": alert["count"],
+            "stuckHours": alert["age_hours"],
+            "severity": "critical" if alert["age_hours"] >= 72 else "warning",
+        }
+        for alert in alerts_map.values()
+    ]
 
     # Sort by hours stuck (most critical first)
     alerts.sort(key=lambda x: -x["stuckHours"])
