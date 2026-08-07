@@ -253,9 +253,23 @@ def index():
 def debug_sample_group():
     """Return a sample response group for debugging."""
     groups = _fetch_response_groups()
-    if groups:
-        return jsonify({"sample": groups[0]})
-    return jsonify({"sample": None})
+
+    # Find a reviewed group
+    reviewed_group = None
+    unreviewed_group = None
+    for g in groups:
+        if g.get("first_review_ts"):
+            reviewed_group = g
+            break
+        if not unreviewed_group:
+            unreviewed_group = g
+
+    return jsonify({
+        "reviewed_sample": reviewed_group,
+        "unreviewed_sample": unreviewed_group,
+        "total_groups": len(groups),
+        "reviewed_count": sum(1 for g in groups if g.get("first_review_ts")),
+    })
 
 
 @app.route("/api/u36/jobs")
