@@ -294,7 +294,7 @@
                     </thead>
                     <tbody>
                         <tr v-for="job in jobs" :key="job.id">
-                            <td>{{ job.jobName }}</td>
+                            <td>{{ job.jobName }} <span style="color: #94a3b8;">({{ job.id }})</span></td>
                             <td>{{ job.projectName }}</td>
                             <td>{{ job.pendingCount }}</td>
                             <td>
