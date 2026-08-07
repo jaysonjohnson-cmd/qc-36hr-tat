@@ -289,13 +289,12 @@
                             <th>Project</th>
                             <th>Pending</th>
                             <th>Oldest Sub (hours)</th>
-                            <th>Reviewers</th>
                             <th>Vendor</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr v-for="job in jobs" :key="job.id">
-                            <td>{{ job.name }}</td>
+                            <td>{{ job.jobName }}</td>
                             <td>{{ job.projectName }}</td>
                             <td>{{ job.pendingCount }}</td>
                             <td>
@@ -304,7 +303,6 @@
                                 </span>
                                 <span v-else class="badge ok">—</span>
                             </td>
-                            <td>{{ job.activeReviewers }}</td>
                             <td>{{ job.vendor }}</td>
                         </tr>
                     </tbody>

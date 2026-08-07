@@ -148,6 +148,33 @@ def _get_project_name(project_id):
     return projects.get(str(project_id), f"Project {project_id}")
 
 
+def _fetch_job_names():
+    """Fetch job name mapping (job_id -> name)."""
+    now = time.time()
+    if _PROJECTS_CACHE.get("jobs") and (now - _PROJECTS_CACHE.get("jobs_fetched_at", 0)) < _CACHE_TTL * 2:
+        return _PROJECTS_CACHE.get("jobs", {})
+
+    try:
+        result = get("/api/jobs", params={"per_page": 500})
+        jobs = result.get("data", [])
+        name_map = {str(j.get("id", "")): j.get("name", f"Job {j.get('id')}") for j in jobs}
+        _PROJECTS_CACHE["jobs"] = name_map
+        _PROJECTS_CACHE["jobs_fetched_at"] = now
+        logging.info(f"Fetched {len(name_map)} job names")
+        return name_map
+    except Exception as e:
+        logging.warning(f"Failed to fetch job names: {e}")
+        return _PROJECTS_CACHE.get("jobs", {})
+
+
+def _get_job_name(job_id):
+    """Get job name by ID."""
+    if not job_id:
+        return "Unknown"
+    jobs = _fetch_job_names()
+    return jobs.get(str(job_id), f"Job {job_id}")
+
+
 @app.before_request
 def require_auth():
     if request.path == "/health":
@@ -258,6 +285,7 @@ def api_u36_jobs():
 
         result.append({
             "id": str(job_id),
+            "jobName": _get_job_name(job_id),
             "projectId": job_data["project_id"],
             "projectName": _get_project_name(job_data["project_id"]),
             "vendor": job_data["tp_review_company"] or "Internal",
