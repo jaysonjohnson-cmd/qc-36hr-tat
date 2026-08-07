@@ -381,6 +381,7 @@ def api_u36_alerts():
 
         submission = group.get("submission_date")
         job_id = group.get("job_id")
+        group_id = group.get("id")
 
         age_seconds = _parse_iso_datetime(submission)
         age_hours = _seconds_to_hours(age_seconds)
@@ -388,15 +389,21 @@ def api_u36_alerts():
         if not (age_hours and age_hours >= 36):
             continue
 
-        # Group by job to deduplicate
+        # Group by job to deduplicate, track oldest group_id
         if job_id not in alerts_map:
             alerts_map[job_id] = {
                 "job_id": job_id,
                 "project_id": group.get("project_id"),
                 "vendor": group.get("tp_review_company") or "Internal",
                 "age_hours": age_hours,
+                "group_id": group_id,
                 "count": 0,
             }
+        else:
+            # Keep the oldest (highest age)
+            if age_hours > alerts_map[job_id]["age_hours"]:
+                alerts_map[job_id]["age_hours"] = age_hours
+                alerts_map[job_id]["group_id"] = group_id
         alerts_map[job_id]["count"] += 1
 
     alerts = [
@@ -406,6 +413,7 @@ def api_u36_alerts():
             "vendor": alert["vendor"],
             "pendingCount": alert["count"],
             "stuckHours": alert["age_hours"],
+            "groupId": alert["group_id"],
             "severity": "critical" if alert["age_hours"] >= 72 else "warning",
         }
         for alert in alerts_map.values()

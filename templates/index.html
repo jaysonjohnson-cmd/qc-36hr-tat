@@ -237,7 +237,11 @@
                     </thead>
                     <tbody>
                         <tr v-for="alert in alerts" :key="alert.id">
-                            <td>{{ alert.name }}</td>
+                            <td>
+                                <a :href="`https://my.fieldagent.net/admin/fieldagent/responseSearch/?group_id=${alert.groupId}`" target="_blank" style="color: #0ea5e9; text-decoration: none;">
+                                    {{ alert.name }}
+                                </a>
+                            </td>
                             <td>{{ alert.projectName }}</td>
                             <td>{{ alert.vendor }}</td>
                             <td>
