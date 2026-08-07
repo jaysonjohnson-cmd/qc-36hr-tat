@@ -244,6 +244,12 @@ def index():
 
 @app.route("/api/u36/jobs")
 def api_u36_jobs():
+    # Temporary: return empty to test frontend
+    return jsonify({"data": []})
+
+
+@app.route("/api/u36/jobs_old")
+def api_u36_jobs_old():
     """Return response groups with submission age, sorted by oldest first."""
     groups = _fetch_response_groups()
 
@@ -307,6 +313,11 @@ def api_u36_jobs():
 
 @app.route("/api/u36/bottlenecks")
 def api_u36_bottlenecks():
+    return jsonify({"data": []})
+
+
+@app.route("/api/u36/bottlenecks_old")
+def api_u36_bottlenecks_old():
     """Return bottleneck analysis by project and vendor."""
     groups = _fetch_response_groups()
 
@@ -393,6 +404,11 @@ def api_u36_bottlenecks():
 
 @app.route("/api/u36/alerts")
 def api_u36_alerts():
+    return jsonify({"data": []})
+
+
+@app.route("/api/u36/alerts_old")
+def api_u36_alerts_old():
     """Return response groups stuck >36 hours."""
     groups = _fetch_response_groups()
 
@@ -451,6 +467,11 @@ def api_u36_alerts():
 
 @app.route("/api/u36/late-reviews")
 def api_u36_late_reviews():
+    return jsonify({"data": []})
+
+
+@app.route("/api/u36/late-reviews_old")
+def api_u36_late_reviews_old():
     """Return jobs reviewed after 36 hours (TAT violations)."""
     groups = _fetch_response_groups()
 
