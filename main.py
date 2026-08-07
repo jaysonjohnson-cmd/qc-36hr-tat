@@ -21,8 +21,9 @@ AUTH_SERVICE_URL = "https://auth-service.storesight.org"
 LOCAL_DEV = os.environ.get("LOCAL_DEV") == "1"
 INTERNAL_API_BASE = os.environ.get("INTERNAL_API_BASE", "https://internal-tool-api.storesight.org")
 
-# Cache for Bloom data (60s TTL)
+# Cache for data (60s TTL)
 _BLOOM_CACHE = {"jobs": None, "fetched_at": 0.0}
+_PROJECTS_CACHE = {"data": {}, "fetched_at": 0.0}
 _CACHE_TTL = 60
 
 
@@ -118,6 +119,33 @@ def _get_vendor(job):
     """Extract review vendor (internal or third-party)."""
     vendor = job.get("tp_review_company") or ""
     return vendor if vendor else "Internal"
+
+
+def _fetch_project_names():
+    """Fetch project name mapping (project_id -> name)."""
+    now = time.time()
+    if _PROJECTS_CACHE["data"] and (now - _PROJECTS_CACHE["fetched_at"]) < _CACHE_TTL * 2:
+        return _PROJECTS_CACHE["data"]
+
+    try:
+        result = get("/api/projects", params={"per_page": 500})
+        projects = result.get("data", [])
+        name_map = {str(p.get("id", "")): p.get("name", f"Project {p.get('id')}") for p in projects}
+        _PROJECTS_CACHE["data"] = name_map
+        _PROJECTS_CACHE["fetched_at"] = now
+        logging.info(f"Fetched {len(name_map)} project names")
+        return name_map
+    except Exception as e:
+        logging.warning(f"Failed to fetch project names: {e}")
+        return _PROJECTS_CACHE["data"]
+
+
+def _get_project_name(project_id):
+    """Get project name by ID."""
+    if not project_id:
+        return "Unknown"
+    projects = _fetch_project_names()
+    return projects.get(str(project_id), f"Project {project_id}")
 
 
 @app.before_request
@@ -231,6 +259,7 @@ def api_u36_jobs():
         result.append({
             "id": str(job_id),
             "projectId": job_data["project_id"],
+            "projectName": _get_project_name(job_data["project_id"]),
             "vendor": job_data["tp_review_company"] or "Internal",
             "pendingCount": job_data["count"],
             "oldestSubmissionAge": age_hours,
@@ -269,7 +298,7 @@ def api_u36_bottlenecks():
             continue
 
         project_id = group.get("project_id", "unknown")
-        project = f"Project {project_id}"
+        project = _get_project_name(project_id)
         vendor = group.get("tp_review_company") or "Internal"
         submission = group.get("submission_date")
         job_id = group.get("job_id")
@@ -345,7 +374,7 @@ def api_u36_alerts():
     alerts = [
         {
             "id": str(alert["job_id"]),
-            "projectName": f"Project {alert['project_id']}",
+            "projectName": _get_project_name(alert["project_id"]),
             "vendor": alert["vendor"],
             "pendingCount": alert["count"],
             "stuckHours": alert["age_hours"],
