@@ -75,6 +75,16 @@ def _fetch_response_groups():
         _BLOOM_CACHE["jobs"] = groups
         _BLOOM_CACHE["fetched_at"] = now
         logging.info(f"Fetched {len(groups)} response groups from FieldAgent")
+
+        # Log sample group to see what fields are available
+        if groups:
+            logging.info(f"SAMPLE RESPONSE GROUP FIELDS: {list(groups[0].keys())}")
+            # Log a group that has a review timestamp to see the structure
+            for g in groups[:5]:
+                if g.get("first_review_ts") or g.get("reviewed_at") or g.get("review_time"):
+                    logging.info(f"GROUP WITH REVIEW: {g}")
+                    break
+
         return groups
     except Exception as e:
         logging.error(f"Failed to fetch response groups: {e}")
