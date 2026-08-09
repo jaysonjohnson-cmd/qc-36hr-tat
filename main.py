@@ -58,10 +58,10 @@ def _fetch_response_groups():
         return _BLOOM_CACHE["jobs"]
 
     try:
-        # Fetch response groups from last 7 days
+        # Fetch response groups from last 30 days (to capture 3-5 day old submissions)
         from datetime import timedelta, datetime as dt
         now_dt = dt.now()
-        date_from = (now_dt - timedelta(days=7)).isoformat()
+        date_from = (now_dt - timedelta(days=30)).isoformat()
 
         logging.info(f"Fetching response groups from {date_from}...")
         result = get(
@@ -257,6 +257,80 @@ def debug_test_data():
             {"project": "Project 1", "projectId": "p1", "pendingSubmissions": 10, "jobCount": 2, "stuck": 1, "avgAge": 35.5, "vendors": {"Internal": 10}},
         ]
     })
+
+
+@app.route("/debug/api-response")
+def debug_api_response():
+    """Show raw response from Bloom API for debugging."""
+    try:
+        groups = _fetch_response_groups()
+        if not groups:
+            return jsonify({"error": "No groups returned from API", "count": 0})
+
+        # Show first few groups to understand structure
+        sample = groups[:3] if len(groups) > 3 else groups
+
+        return jsonify({
+            "total_count": len(groups),
+            "sample_count": len(sample),
+            "sample_groups": sample,
+            "fields_in_first_group": list(groups[0].keys()) if groups else [],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "type": type(e).__name__})
+
+
+@app.route("/debug/late-reviews-debug")
+def debug_late_reviews():
+    """Debug endpoint showing late-reviews processing."""
+    groups = _fetch_response_groups()
+
+    if not groups:
+        return jsonify({"error": "No groups from API", "reviewed_count": 0})
+
+    reviewed_groups = [g for g in groups if g.get("first_review_ts")]
+
+    return jsonify({
+        "total_groups": len(groups),
+        "groups_with_review": len(reviewed_groups),
+        "sample_reviewed": reviewed_groups[:2] if reviewed_groups else [],
+        "sample_unreviewed": [g for g in groups if not g.get("first_review_ts")][:2],
+    })
+
+
+@app.route("/debug/raw-api-call")
+def debug_raw_api_call():
+    """Test raw API call to Bloom."""
+    try:
+        logging.info("Attempting direct API call to /api/responsegroups")
+        from datetime import timedelta, datetime as dt
+        now_dt = dt.now()
+        date_from = (now_dt - timedelta(days=7)).isoformat()
+
+        result = get(
+            "/api/responsegroups",
+            params={
+                "submission_date_from": date_from,
+                "per_page": 500,
+                "sort": "-submission_date"
+            }
+        )
+        return jsonify({
+            "success": True,
+            "result_type": type(result).__name__,
+            "result_keys": list(result.keys()) if isinstance(result, dict) else "not a dict",
+            "data_count": len(result.get("data", [])) if isinstance(result, dict) else 0,
+            "first_result": result.get("data", [{}])[0] if isinstance(result, dict) and result.get("data") else None,
+            "raw_result": result
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "traceback": traceback.format_exc()
+        })
 
 
 @app.route("/logout")
@@ -696,11 +770,17 @@ def api_u36_late_reviews():
 
     for i, group in enumerate(groups):
         submission = group.get("submission_date")
-        review_time = group.get("first_review_ts")
+        # Try multiple field names for review timestamp
+        review_time = (
+            group.get("first_review_ts") or
+            group.get("reviewed_date") or
+            group.get("completion_time") or
+            group.get("review_ts")
+        )
         job_id = group.get("job_id")
         group_id = group.get("id")
 
-        # Only include reviewed groups
+        # Only include reviewed groups (check if review_time exists)
         if not review_time:
             continue
 
