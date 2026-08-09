@@ -58,10 +58,10 @@ def _fetch_response_groups():
         return _BLOOM_CACHE["jobs"]
 
     try:
-        # Fetch response groups from last 30 days (to capture 3-5 day old submissions)
+        # Fetch response groups from last 90 days (to capture 3-5+ day old submissions)
         from datetime import timedelta, datetime as dt
         now_dt = dt.now()
-        date_from = (now_dt - timedelta(days=30)).isoformat()
+        date_from = (now_dt - timedelta(days=90)).isoformat()
 
         logging.info(f"Fetching response groups from {date_from}...")
         result = get(
