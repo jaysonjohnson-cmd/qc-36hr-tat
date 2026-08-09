@@ -777,13 +777,8 @@ def api_u36_late_reviews():
 
     for i, group in enumerate(groups):
         submission = group.get("submission_date") or group.get("submissionDateTime")
-        # Try multiple field names for review timestamp
-        review_time = (
-            group.get("first_review_ts") or
-            group.get("reviewed_date") or
-            group.get("completion_time") or
-            group.get("review_ts")
-        )
+        # Use review_ts (most recent review timestamp) instead of first_review_ts
+        review_time = group.get("review_ts")
         job_id = group.get("job_id")
         group_id = group.get("id")
 
