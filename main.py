@@ -764,12 +764,19 @@ def api_u36_late_reviews():
 
     logging.info(f"Late reviews: checking {len(groups)} groups total")
 
+    # Log what fields are in the first few groups to debug data structure
+    if groups:
+        logging.info(f"Sample group fields: {list(groups[0].keys())}")
+        # Check which groups have review data
+        reviewed_with_ts = [g for g in groups if g.get("first_review_ts")]
+        logging.info(f"Groups with first_review_ts: {len(reviewed_with_ts)}/{len(groups)}")
+
     violations_map = {}
     reviewed_count = 0
     tat_fail_count = 0
 
     for i, group in enumerate(groups):
-        submission = group.get("submission_date")
+        submission = group.get("submission_date") or group.get("submissionDateTime")
         # Try multiple field names for review timestamp
         review_time = (
             group.get("first_review_ts") or
