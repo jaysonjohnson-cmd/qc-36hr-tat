@@ -244,8 +244,65 @@ def index():
 
 @app.route("/api/u36/jobs")
 def api_u36_jobs():
-    # Temporary: return empty to test frontend
-    return jsonify({"data": []})
+    """Return response groups with submission age, sorted by oldest first."""
+    groups = _fetch_response_groups()
+
+    # Group by job_id to get oldest submission per job
+    jobs_map = {}
+    for group in groups:
+        job_id = group.get("job_id")
+        if not job_id:
+            continue
+
+        # Skip reviewed groups
+        first_review = group.get("first_review_ts")
+        if first_review:
+            continue
+
+        # Skip test/screener/ticket jobs (status-based filtering)
+        status = group.get("status", "")
+        if status in ("D", "R"):  # Denied or rejected
+            continue
+
+        submission = group.get("submission_date")
+        if not submission:
+            continue
+
+        if job_id not in jobs_map:
+            jobs_map[job_id] = {
+                "job_id": job_id,
+                "project_id": group.get("project_id"),
+                "submission_date": submission,
+                "tp_review_company": group.get("tp_review_company"),
+                "count": 0,
+            }
+        jobs_map[job_id]["count"] += 1
+
+    result = []
+    for job_id, job_data in jobs_map.items():
+        age_seconds = _parse_iso_datetime(job_data["submission_date"])
+        age_hours = _seconds_to_hours(age_seconds)
+
+        result.append({
+            "id": str(job_id),
+            "jobName": _get_job_name(job_id),
+            "projectId": job_data["project_id"],
+            "projectName": _get_project_name(job_data["project_id"]),
+            "vendor": job_data["tp_review_company"] or "Internal",
+            "pendingCount": job_data["count"],
+            "oldestSubmissionAge": age_hours,
+            "oldestSubmissionStuck": age_hours >= 36 if age_hours else None,
+        })
+
+    # Sort by age (oldest first)
+    result.sort(key=lambda x: (
+        x["oldestSubmissionAge"] is None,
+        -(x["oldestSubmissionAge"] or 0),
+        -x["pendingCount"]
+    ))
+
+    logging.info(f"GET /api/u36/jobs by={g.user.get('email')} count={len(result)}")
+    return jsonify({"data": result})
 
 
 @app.route("/api/u36/jobs_old")
@@ -313,7 +370,88 @@ def api_u36_jobs_old():
 
 @app.route("/api/u36/bottlenecks")
 def api_u36_bottlenecks():
-    return jsonify({"data": []})
+    """Return bottleneck analysis by project and vendor."""
+    groups = _fetch_response_groups()
+
+    bottlenecks = defaultdict(lambda: {
+        "pending": 0,
+        "stuck": 0,
+        "avgAge": 0,
+        "jobCount": set(),
+        "vendors": defaultdict(int),
+        "project_id": None,
+        "top_job_id": None,
+        "top_job_pending": 0,
+    })
+
+    ages_by_project = defaultdict(list)
+
+    for group in groups:
+        # Skip reviewed groups
+        if group.get("first_review_ts"):
+            continue
+
+        project_id = group.get("project_id", "unknown")
+        project = _get_project_name(project_id)
+        vendor = group.get("tp_review_company") or "Internal"
+        submission = group.get("submission_date")
+        job_id = group.get("job_id")
+
+        age_seconds = _parse_iso_datetime(submission)
+        age_hours = _seconds_to_hours(age_seconds)
+
+        bottlenecks[project]["pending"] += 1
+        bottlenecks[project]["project_id"] = project_id
+        bottlenecks[project]["jobCount"].add(job_id)
+        bottlenecks[project]["vendors"][vendor] += 1
+
+        if age_hours and age_hours >= 36:
+            bottlenecks[project]["stuck"] += 1
+
+        if age_hours:
+            ages_by_project[project].append(age_hours)
+
+    # Find top job per project (most pending)
+    for group in groups:
+        if group.get("first_review_ts"):
+            continue
+        project = _get_project_name(group.get("project_id", "unknown"))
+        job_id = group.get("job_id")
+        if project in bottlenecks:
+            # Count pending per job for this project
+            job_key = f"{project}_{job_id}"
+            if not hasattr(api_u36_bottlenecks, "_job_counts"):
+                api_u36_bottlenecks._job_counts = defaultdict(int)
+            api_u36_bottlenecks._job_counts[job_key] += 1
+
+            if api_u36_bottlenecks._job_counts[job_key] > bottlenecks[project]["top_job_pending"]:
+                bottlenecks[project]["top_job_pending"] = api_u36_bottlenecks._job_counts[job_key]
+                bottlenecks[project]["top_job_id"] = job_id
+
+    # Calculate average age per project
+    for project, ages in ages_by_project.items():
+        if ages:
+            bottlenecks[project]["avgAge"] = round(sum(ages) / len(ages), 1)
+
+    result = [
+        {
+            "project": project,
+            "projectId": data["project_id"],
+            "topJobId": data["top_job_id"],
+            "pendingSubmissions": data["pending"],
+            "jobsStuck": data["stuck"],
+            "jobCount": len(data["jobCount"]),
+            "avgAge": data["avgAge"],
+            "vendors": dict(data["vendors"]),
+        }
+        for project, data in bottlenecks.items()
+    ]
+
+    # Sort by pending count (most problematic first)
+    result.sort(key=lambda x: -x["pendingSubmissions"])
+
+    logging.info(f"GET /api/u36/bottlenecks by={g.user.get('email')} projects={len(result)}")
+    return jsonify({"data": result})
 
 
 @app.route("/api/u36/bottlenecks_old")
@@ -404,7 +542,60 @@ def api_u36_bottlenecks_old():
 
 @app.route("/api/u36/alerts")
 def api_u36_alerts():
-    return jsonify({"data": []})
+    """Return response groups stuck >36 hours."""
+    groups = _fetch_response_groups()
+
+    alerts_map = {}
+    for group in groups:
+        # Skip reviewed groups
+        if group.get("first_review_ts"):
+            continue
+
+        submission = group.get("submission_date")
+        job_id = group.get("job_id")
+        group_id = group.get("id")
+
+        age_seconds = _parse_iso_datetime(submission)
+        age_hours = _seconds_to_hours(age_seconds)
+
+        if not (age_hours and age_hours >= 36):
+            continue
+
+        # Group by job to deduplicate, track oldest group_id
+        if job_id not in alerts_map:
+            alerts_map[job_id] = {
+                "job_id": job_id,
+                "project_id": group.get("project_id"),
+                "vendor": group.get("tp_review_company") or "Internal",
+                "age_hours": age_hours,
+                "group_id": group_id,
+                "count": 0,
+            }
+        else:
+            # Keep the oldest (highest age)
+            if age_hours > alerts_map[job_id]["age_hours"]:
+                alerts_map[job_id]["age_hours"] = age_hours
+                alerts_map[job_id]["group_id"] = group_id
+        alerts_map[job_id]["count"] += 1
+
+    alerts = [
+        {
+            "id": str(alert["job_id"]),
+            "projectName": _get_project_name(alert["project_id"]),
+            "vendor": alert["vendor"],
+            "pendingCount": alert["count"],
+            "stuckHours": alert["age_hours"],
+            "groupId": alert["group_id"],
+            "severity": "critical" if alert["age_hours"] >= 72 else "warning",
+        }
+        for alert in alerts_map.values()
+    ]
+
+    # Sort by hours stuck (most critical first)
+    alerts.sort(key=lambda x: -x["stuckHours"])
+
+    logging.info(f"GET /api/u36/alerts by={g.user.get('email')} count={len(alerts)}")
+    return jsonify({"data": alerts})
 
 
 @app.route("/api/u36/alerts_old")
@@ -467,7 +658,87 @@ def api_u36_alerts_old():
 
 @app.route("/api/u36/late-reviews")
 def api_u36_late_reviews():
-    return jsonify({"data": []})
+    """Return jobs reviewed after 36 hours (TAT violations)."""
+    groups = _fetch_response_groups()
+
+    logging.info(f"Late reviews: checking {len(groups)} groups")
+
+    violations_map = {}
+    reviewed_count = 0
+    for group in groups:
+        submission = group.get("submission_date")
+        review_time = group.get("first_review_ts")
+        job_id = group.get("job_id")
+        group_id = group.get("id")
+
+        # Only include reviewed groups
+        if not review_time:
+            continue
+
+        reviewed_count += 1
+
+        # Calculate time to review
+        try:
+            from email.utils import parsedate_to_datetime
+
+            # Parse submission time
+            try:
+                sub_dt = datetime.fromisoformat(submission.replace("Z", "+00:00"))
+            except:
+                sub_dt = parsedate_to_datetime(submission) if submission else None
+
+            # Parse review time
+            try:
+                rev_dt = datetime.fromisoformat(review_time.replace("Z", "+00:00"))
+            except:
+                rev_dt = parsedate_to_datetime(review_time) if review_time else None
+
+            if not sub_dt or not rev_dt:
+                continue
+
+            tat_seconds = (rev_dt - sub_dt).total_seconds()
+            tat_hours = _seconds_to_hours(tat_seconds)
+        except Exception as e:
+            logging.warning(f"Failed to calc TAT for group {group_id}: {e}")
+            continue
+
+        if not (tat_hours and tat_hours >= 36):
+            continue
+
+        # Group by job, track worst (longest TAT) group_id
+        if job_id not in violations_map:
+            violations_map[job_id] = {
+                "job_id": job_id,
+                "project_id": group.get("project_id"),
+                "vendor": group.get("tp_review_company") or "Internal",
+                "tat_hours": tat_hours,
+                "group_id": group_id,
+                "count": 0,
+            }
+        else:
+            if tat_hours > violations_map[job_id]["tat_hours"]:
+                violations_map[job_id]["tat_hours"] = tat_hours
+                violations_map[job_id]["group_id"] = group_id
+        violations_map[job_id]["count"] += 1
+
+    violations = [
+        {
+            "id": str(v["job_id"]),
+            "projectName": _get_project_name(v["project_id"]),
+            "vendor": v["vendor"],
+            "responseCount": v["count"],
+            "tatHours": v["tat_hours"],
+            "groupId": v["group_id"],
+            "severity": "critical" if v["tat_hours"] >= 72 else "warning",
+        }
+        for v in violations_map.values()
+    ]
+
+    # Sort by TAT hours (worst first)
+    violations.sort(key=lambda x: -x["tatHours"])
+
+    logging.info(f"GET /api/u36/late-reviews by={g.user.get('email')} reviewed={reviewed_count} violations={len(violations)}")
+    return jsonify({"data": violations})
 
 
 @app.route("/api/u36/late-reviews_old")
