@@ -1,4 +1,4 @@
-# AGENTS.md — QC 36hr TAT
+# AGENTS.md — [TOOL NAME]
 
 This file is the single source of truth for AI coding agents (Claude Code, Cursor,
 Windsurf, Copilot) working on this tool. Follow these rules exactly.
@@ -507,10 +507,10 @@ the tool is provisioned. Use it for files the Storage API can't hold:
 uploads, attachments, generated PDFs, exported spreadsheets — anything
 larger than 50 KB or non-JSON.
 
-- Folder ID (for reference only): `1mUTVPqghhIrBEoUtj3EBhPIOotvNq31p`
+- Folder ID (for reference only): `[drive-folder-id]`
 - Cap: **32 MB per upload** (Cloud Run request-size limit).
 - Your tool never touches Drive directly. All reads/writes go through the
-  Internal API's `/api/files/qc-36hr-tat` endpoints, and a `files.py`
+  Internal API's `/api/files/[your-slug]` endpoints, and a `files.py`
   helper module is included so you don't have to write the request
   boilerplate.
 

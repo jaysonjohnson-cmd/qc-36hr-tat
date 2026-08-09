@@ -45,7 +45,7 @@ class TestProductionCookieAuth:
         client.set_cookie("storesight_session", _session_token())
         resp = client.get("/")
         assert resp.status_code == 200
-        assert b"Tool placeholder" in resp.data
+        assert b"QC 36hr TAT" in resp.data
 
     def test_expired_cookie_redirects_to_login(self, client):
         client.set_cookie("storesight_session", _session_token(expired=True))
