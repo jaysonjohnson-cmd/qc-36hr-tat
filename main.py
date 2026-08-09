@@ -63,6 +63,7 @@ def _fetch_response_groups():
         now_dt = dt.now()
         date_from = (now_dt - timedelta(days=7)).isoformat()
 
+        logging.info(f"Fetching response groups from {date_from}...")
         result = get(
             "/api/responsegroups",
             params={
@@ -74,10 +75,16 @@ def _fetch_response_groups():
         groups = result.get("data", [])
         _BLOOM_CACHE["jobs"] = groups
         _BLOOM_CACHE["fetched_at"] = now
-        logging.info(f"Fetched {len(groups)} response groups")
+        logging.info(f"Successfully fetched {len(groups)} response groups")
         return groups
+    except RuntimeError as e:
+        logging.error(f"AUTHENTICATION FAILED: {e}")
+        logging.error(f"This usually means: no dev token, token expired, or OIDC token unavailable")
+        return []
     except Exception as e:
-        logging.error(f"Failed to fetch response groups: {e}")
+        logging.error(f"Failed to fetch response groups: {type(e).__name__}: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
         return []
 
 
@@ -230,6 +237,26 @@ def require_auth():
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.route("/debug/test-data")
+def debug_test_data():
+    """Return sample test data for debugging - remove in production."""
+    return jsonify({
+        "jobs": [
+            {"id": "1", "jobName": "Test Job A", "projectName": "Project 1", "vendor": "Internal", "pendingCount": 5, "oldestSubmissionAge": 45.2, "oldestSubmissionStuck": True},
+            {"id": "2", "jobName": "Test Job B", "projectName": "Project 2", "vendor": "Vendor X", "pendingCount": 3, "oldestSubmissionAge": 20.1, "oldestSubmissionStuck": False},
+        ],
+        "alerts": [
+            {"id": "1", "projectName": "Project 1", "vendor": "Internal", "pendingCount": 5, "stuckHours": 45.2, "severity": "critical"},
+        ],
+        "lateReviews": [
+            {"id": "1", "projectName": "Project 1", "vendor": "Internal", "responseCount": 2, "tatHours": 48.5, "severity": "critical"},
+        ],
+        "bottlenecks": [
+            {"project": "Project 1", "projectId": "p1", "pendingSubmissions": 10, "jobCount": 2, "stuck": 1, "avgAge": 35.5, "vendors": {"Internal": 10}},
+        ]
+    })
 
 
 @app.route("/logout")
@@ -661,11 +688,13 @@ def api_u36_late_reviews():
     """Return jobs reviewed after 36 hours (TAT violations)."""
     groups = _fetch_response_groups()
 
-    logging.info(f"Late reviews: checking {len(groups)} groups")
+    logging.info(f"Late reviews: checking {len(groups)} groups total")
 
     violations_map = {}
     reviewed_count = 0
-    for group in groups:
+    tat_fail_count = 0
+
+    for i, group in enumerate(groups):
         submission = group.get("submission_date")
         review_time = group.get("first_review_ts")
         job_id = group.get("job_id")
@@ -677,6 +706,10 @@ def api_u36_late_reviews():
 
         reviewed_count += 1
 
+        # Log first few examples
+        if reviewed_count <= 3:
+            logging.info(f"Sample reviewed group: sub={submission}, review={review_time}, job={job_id}")
+
         # Calculate time to review
         try:
             from email.utils import parsedate_to_datetime
@@ -684,22 +717,29 @@ def api_u36_late_reviews():
             # Parse submission time
             try:
                 sub_dt = datetime.fromisoformat(submission.replace("Z", "+00:00"))
-            except:
+            except Exception as sub_err:
+                logging.debug(f"Failed ISO parse for submission '{submission}': {sub_err}")
                 sub_dt = parsedate_to_datetime(submission) if submission else None
 
             # Parse review time
             try:
                 rev_dt = datetime.fromisoformat(review_time.replace("Z", "+00:00"))
-            except:
+            except Exception as rev_err:
+                logging.debug(f"Failed ISO parse for review '{review_time}': {rev_err}")
                 rev_dt = parsedate_to_datetime(review_time) if review_time else None
 
             if not sub_dt or not rev_dt:
+                tat_fail_count += 1
+                if tat_fail_count <= 3:
+                    logging.warning(f"Could not parse dates for group {group_id}: sub_dt={sub_dt}, rev_dt={rev_dt}")
                 continue
 
             tat_seconds = (rev_dt - sub_dt).total_seconds()
             tat_hours = _seconds_to_hours(tat_seconds)
         except Exception as e:
-            logging.warning(f"Failed to calc TAT for group {group_id}: {e}")
+            tat_fail_count += 1
+            if tat_fail_count <= 3:
+                logging.warning(f"Failed to calc TAT for group {group_id}: {e}")
             continue
 
         if not (tat_hours and tat_hours >= 36):
@@ -737,7 +777,7 @@ def api_u36_late_reviews():
     # Sort by TAT hours (worst first)
     violations.sort(key=lambda x: -x["tatHours"])
 
-    logging.info(f"GET /api/u36/late-reviews by={g.user.get('email')} reviewed={reviewed_count} violations={len(violations)}")
+    logging.info(f"GET /api/u36/late-reviews by={g.user.get('email')} total_groups={len(groups)} reviewed={reviewed_count} violations={len(violations)}")
     return jsonify({"data": violations})
 
 
@@ -822,7 +862,7 @@ def api_u36_late_reviews_old():
     # Sort by TAT hours (worst first)
     violations.sort(key=lambda x: -x["tatHours"])
 
-    logging.info(f"GET /api/u36/late-reviews by={g.user.get('email')} reviewed={reviewed_count} violations={len(violations)}")
+    logging.info(f"GET /api/u36/late-reviews by={g.user.get('email')} total_groups={len(groups)} reviewed={reviewed_count} violations={len(violations)}")
     return jsonify({"data": violations})
 
 
