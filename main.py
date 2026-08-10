@@ -1,6 +1,7 @@
 import logging
 import os
 import pathlib
+import threading
 import time
 from datetime import datetime
 from collections import defaultdict
@@ -51,7 +52,8 @@ def _get_auth_header():
     return {"Authorization": f"Bearer {token}"}
 
 
-_MAX_RESPONSE_GROUP_PAGES = 20  # ~2000 records at 100/page; covers several days of volume
+_MAX_RESPONSE_GROUP_PAGES = 15  # ~1500 records at 100/page; stays under the 60 req/min tool quota
+_response_groups_lock = threading.Lock()
 
 
 def _fetch_response_groups():
@@ -61,53 +63,68 @@ def _fetch_response_groups():
     newest-first, so a single request only ever gets today's submissions.
     Page through until we either run out of results, hit the age cutoff, or
     hit the page cap.
+
+    The 4 dashboard tabs all call this on every refresh. Without
+    coordination, each would kick off its own multi-page sweep at the same
+    time and blow through the API's 60 req/min per-tool quota. A lock makes
+    concurrent callers share one sweep instead of racing to start their own.
     """
     now = time.time()
     if _BLOOM_CACHE["jobs"] and (now - _BLOOM_CACHE["fetched_at"]) < _CACHE_TTL:
         return _BLOOM_CACHE["jobs"]
 
-    try:
-        from datetime import timedelta, datetime as dt
-        now_dt = dt.now()
-        cutoff_dt = now_dt - timedelta(days=7)
-        date_from = cutoff_dt.isoformat()
+    with _response_groups_lock:
+        # Re-check now that we hold the lock — another thread may have just
+        # finished the sweep while we were waiting.
+        now = time.time()
+        if _BLOOM_CACHE["jobs"] and (now - _BLOOM_CACHE["fetched_at"]) < _CACHE_TTL:
+            return _BLOOM_CACHE["jobs"]
 
-        all_groups = []
-        for page in range(1, _MAX_RESPONSE_GROUP_PAGES + 1):
-            result = get(
-                "/api/responsegroups",
-                params={
-                    "submission_date_from": date_from,
-                    "per_page": 100,
-                    "page": page,
-                    "sort": "-submission_date"
-                }
-            )
-            page_groups = result.get("data", [])
-            if not page_groups:
-                break
-            all_groups.extend(page_groups)
+        try:
+            from datetime import timedelta, datetime as dt
+            now_dt = dt.now()
+            cutoff_dt = now_dt - timedelta(days=5)
+            date_from = cutoff_dt.isoformat()
 
-            oldest_submission = page_groups[-1].get("submission_date")
-            oldest_age = _parse_iso_datetime(oldest_submission)
-            if oldest_age is not None and oldest_age >= 7 * 24 * 3600:
-                break
-            if len(page_groups) < 100:
-                break
+            all_groups = []
+            for page in range(1, _MAX_RESPONSE_GROUP_PAGES + 1):
+                result = get(
+                    "/api/responsegroups",
+                    params={
+                        "submission_date_from": date_from,
+                        "per_page": 100,
+                        "page": page,
+                        "sort": "-submission_date"
+                    }
+                )
+                page_groups = result.get("data", [])
+                if not page_groups:
+                    break
+                all_groups.extend(page_groups)
 
-        _BLOOM_CACHE["jobs"] = all_groups
-        _BLOOM_CACHE["fetched_at"] = now
-        logging.info(f"Successfully fetched {len(all_groups)} response groups across pages")
-        return all_groups
-    except RuntimeError as e:
-        logging.error(f"AUTHENTICATION FAILED: {e}")
-        logging.error(f"This usually means: no dev token, token expired, or OIDC token unavailable")
-        return []
-    except Exception as e:
-        logging.error(f"Failed to fetch response groups: {type(e).__name__}: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-        return []
+                oldest_submission = page_groups[-1].get("submission_date")
+                oldest_age = _parse_iso_datetime(oldest_submission)
+                if oldest_age is not None and oldest_age >= 5 * 24 * 3600:
+                    break
+                if len(page_groups) < 100:
+                    break
+                # Small pacing gap between our own page requests so a single
+                # sweep doesn't itself look like a burst to the rate limiter.
+                time.sleep(0.2)
+
+            _BLOOM_CACHE["jobs"] = all_groups
+            _BLOOM_CACHE["fetched_at"] = time.time()
+            logging.info(f"Successfully fetched {len(all_groups)} response groups across pages")
+            return all_groups
+        except RuntimeError as e:
+            logging.error(f"AUTHENTICATION FAILED: {e}")
+            logging.error(f"This usually means: no dev token, token expired, or OIDC token unavailable")
+            return []
+        except Exception as e:
+            logging.error(f"Failed to fetch response groups: {type(e).__name__}: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            return []
 
 
 def _parse_iso_datetime(dt_str):
