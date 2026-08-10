@@ -285,6 +285,7 @@
                             <th>Vendor</th>
                             <th>TAT (hours)</th>
                             <th>Responses</th>
+                            <th>Status</th>
                             <th>Severity</th>
                         </tr>
                     </thead>
@@ -303,6 +304,7 @@
                                 </span>
                             </td>
                             <td>{{ review.responseCount }}</td>
+                            <td>{{ review.status === 'still-pending' ? 'Still Pending' : 'Reviewed Late' }}</td>
                             <td>{{ review.severity }}</td>
                         </tr>
                     </tbody>

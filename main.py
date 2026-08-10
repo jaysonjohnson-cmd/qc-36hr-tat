@@ -51,32 +51,54 @@ def _get_auth_header():
     return {"Authorization": f"Bearer {token}"}
 
 
+_MAX_RESPONSE_GROUP_PAGES = 20  # ~2000 records at 100/page; covers several days of volume
+
+
 def _fetch_response_groups():
-    """Fetch response groups with submission timestamps from FieldAgent API."""
+    """Fetch response groups with submission timestamps from FieldAgent API.
+
+    The API caps per_page at 100 regardless of what we ask for, and returns
+    newest-first, so a single request only ever gets today's submissions.
+    Page through until we either run out of results, hit the age cutoff, or
+    hit the page cap.
+    """
     now = time.time()
     if _BLOOM_CACHE["jobs"] and (now - _BLOOM_CACHE["fetched_at"]) < _CACHE_TTL:
         return _BLOOM_CACHE["jobs"]
 
     try:
-        # Fetch response groups from last 90 days (to capture 3-5+ day old submissions)
         from datetime import timedelta, datetime as dt
         now_dt = dt.now()
-        date_from = (now_dt - timedelta(days=90)).isoformat()
+        cutoff_dt = now_dt - timedelta(days=7)
+        date_from = cutoff_dt.isoformat()
 
-        logging.info(f"Fetching response groups from {date_from}...")
-        result = get(
-            "/api/responsegroups",
-            params={
-                "submission_date_from": date_from,
-                "per_page": 500,
-                "sort": "-submission_date"
-            }
-        )
-        groups = result.get("data", [])
-        _BLOOM_CACHE["jobs"] = groups
+        all_groups = []
+        for page in range(1, _MAX_RESPONSE_GROUP_PAGES + 1):
+            result = get(
+                "/api/responsegroups",
+                params={
+                    "submission_date_from": date_from,
+                    "per_page": 100,
+                    "page": page,
+                    "sort": "-submission_date"
+                }
+            )
+            page_groups = result.get("data", [])
+            if not page_groups:
+                break
+            all_groups.extend(page_groups)
+
+            oldest_submission = page_groups[-1].get("submission_date")
+            oldest_age = _parse_iso_datetime(oldest_submission)
+            if oldest_age is not None and oldest_age >= 7 * 24 * 3600:
+                break
+            if len(page_groups) < 100:
+                break
+
+        _BLOOM_CACHE["jobs"] = all_groups
         _BLOOM_CACHE["fetched_at"] = now
-        logging.info(f"Successfully fetched {len(groups)} response groups")
-        return groups
+        logging.info(f"Successfully fetched {len(all_groups)} response groups across pages")
+        return all_groups
     except RuntimeError as e:
         logging.error(f"AUTHENTICATION FAILED: {e}")
         logging.error(f"This usually means: no dev token, token expired, or OIDC token unavailable")
@@ -759,73 +781,48 @@ def api_u36_alerts_old():
 
 @app.route("/api/u36/late-reviews")
 def api_u36_late_reviews():
-    """Return jobs reviewed after 36 hours (TAT violations)."""
+    """Return jobs that are TAT violations against the 36hr KPI.
+
+    A violation is either:
+      - reviewed-late: first_review_ts is set, but occurred >36h after submission
+      - still-pending: first_review_ts is NULL, and it's been >36h since submission
+    (Per the U36 KPI definition: on-time = first_review_ts within 36h of submission.)
+    """
     groups = _fetch_response_groups()
 
-    logging.info(f"Late reviews: checking {len(groups)} groups total")
-
-    # Log what fields are in the first few groups to debug data structure
-    if groups:
-        logging.info(f"Sample group fields: {list(groups[0].keys())}")
-        # Check which groups have review data
-        reviewed_with_ts = [g for g in groups if g.get("first_review_ts")]
-        logging.info(f"Groups with first_review_ts: {len(reviewed_with_ts)}/{len(groups)}")
-
     violations_map = {}
-    reviewed_count = 0
-    tat_fail_count = 0
+    reviewed_late_count = 0
+    still_pending_count = 0
 
-    for i, group in enumerate(groups):
-        submission = group.get("submission_date") or group.get("submissionDateTime")
-        # Use review_ts (most recent review timestamp) instead of first_review_ts
-        review_time = group.get("review_ts")
+    for group in groups:
+        submission = group.get("submission_date")
+        review_time = group.get("first_review_ts")
         job_id = group.get("job_id")
         group_id = group.get("id")
 
-        # Only include reviewed groups (check if review_time exists)
-        if not review_time:
+        if not submission or not job_id:
             continue
 
-        reviewed_count += 1
+        sub_age_seconds = _parse_iso_datetime(submission)
+        sub_age_hours = _seconds_to_hours(sub_age_seconds)
 
-        # Log first few examples
-        if reviewed_count <= 3:
-            logging.info(f"Sample reviewed group: sub={submission}, review={review_time}, job={job_id}")
-
-        # Calculate time to review
-        try:
-            from email.utils import parsedate_to_datetime
-
-            # Parse submission time
-            try:
-                sub_dt = datetime.fromisoformat(submission.replace("Z", "+00:00"))
-            except Exception as sub_err:
-                logging.debug(f"Failed ISO parse for submission '{submission}': {sub_err}")
-                sub_dt = parsedate_to_datetime(submission) if submission else None
-
-            # Parse review time
-            try:
-                rev_dt = datetime.fromisoformat(review_time.replace("Z", "+00:00"))
-            except Exception as rev_err:
-                logging.debug(f"Failed ISO parse for review '{review_time}': {rev_err}")
-                rev_dt = parsedate_to_datetime(review_time) if review_time else None
-
-            if not sub_dt or not rev_dt:
-                tat_fail_count += 1
-                if tat_fail_count <= 3:
-                    logging.warning(f"Could not parse dates for group {group_id}: sub_dt={sub_dt}, rev_dt={rev_dt}")
+        if review_time:
+            # Reviewed — check if it happened more than 36h after submission
+            review_age_seconds = _parse_iso_datetime(review_time)
+            if review_age_seconds is None or sub_age_seconds is None:
                 continue
-
-            tat_seconds = (rev_dt - sub_dt).total_seconds()
-            tat_hours = _seconds_to_hours(tat_seconds)
-        except Exception as e:
-            tat_fail_count += 1
-            if tat_fail_count <= 3:
-                logging.warning(f"Failed to calc TAT for group {group_id}: {e}")
-            continue
-
-        if not (tat_hours and tat_hours >= 36):
-            continue
+            tat_hours = _seconds_to_hours(sub_age_seconds - review_age_seconds)
+            if tat_hours is None or tat_hours < 36:
+                continue
+            status = "reviewed-late"
+            reviewed_late_count += 1
+        else:
+            # Still pending — check if it's been more than 36h since submission
+            if sub_age_hours is None or sub_age_hours < 36:
+                continue
+            tat_hours = sub_age_hours
+            status = "still-pending"
+            still_pending_count += 1
 
         # Group by job, track worst (longest TAT) group_id
         if job_id not in violations_map:
@@ -834,12 +831,14 @@ def api_u36_late_reviews():
                 "project_id": group.get("project_id"),
                 "vendor": group.get("tp_review_company") or "Internal",
                 "tat_hours": tat_hours,
+                "status": status,
                 "group_id": group_id,
                 "count": 0,
             }
         else:
             if tat_hours > violations_map[job_id]["tat_hours"]:
                 violations_map[job_id]["tat_hours"] = tat_hours
+                violations_map[job_id]["status"] = status
                 violations_map[job_id]["group_id"] = group_id
         violations_map[job_id]["count"] += 1
 
@@ -851,6 +850,7 @@ def api_u36_late_reviews():
             "responseCount": v["count"],
             "tatHours": v["tat_hours"],
             "groupId": v["group_id"],
+            "status": v["status"],
             "severity": "critical" if v["tat_hours"] >= 72 else "warning",
         }
         for v in violations_map.values()
@@ -859,7 +859,10 @@ def api_u36_late_reviews():
     # Sort by TAT hours (worst first)
     violations.sort(key=lambda x: -x["tatHours"])
 
-    logging.info(f"GET /api/u36/late-reviews by={g.user.get('email')} total_groups={len(groups)} reviewed={reviewed_count} violations={len(violations)}")
+    logging.info(
+        f"GET /api/u36/late-reviews by={g.user.get('email')} total_groups={len(groups)} "
+        f"reviewed_late={reviewed_late_count} still_pending={still_pending_count} violations={len(violations)}"
+    )
     return jsonify({"data": violations})
 
 
