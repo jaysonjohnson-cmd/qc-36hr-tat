@@ -721,6 +721,7 @@ def api_u36_alerts():
     alerts = [
         {
             "id": str(alert["job_id"]),
+            "name": _get_job_name(alert["job_id"]),
             "projectName": _get_project_name(alert["project_id"]),
             "vendor": alert["vendor"],
             "pendingCount": alert["count"],
@@ -862,6 +863,7 @@ def api_u36_late_reviews():
     violations = [
         {
             "id": str(v["job_id"]),
+            "name": _get_job_name(v["job_id"]),
             "projectName": _get_project_name(v["project_id"]),
             "vendor": v["vendor"],
             "responseCount": v["count"],

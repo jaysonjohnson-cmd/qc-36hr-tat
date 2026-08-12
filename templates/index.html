@@ -242,7 +242,6 @@
                             <th>Vendor</th>
                             <th>Stuck (hours)</th>
                             <th>Pending</th>
-                            <th>Reviewers</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -260,7 +259,6 @@
                                 </span>
                             </td>
                             <td>{{ alert.pendingCount }}</td>
-                            <td>{{ alert.activeReviewers }}</td>
                         </tr>
                     </tbody>
                 </table>
@@ -514,11 +512,6 @@ createApp({
                 this.lateReviews = (await lateReviewsResp.json()).data || [];
                 this.bottlenecks = (await bottlenecksResp.json()).data || [];
 
-                // Enrich late reviews with job names
-                for (let review of this.lateReviews) {
-                    review.name = this.getJobName(review.id);
-                }
-
                 const now = new Date();
                 this.lastRefresh = now.toLocaleTimeString();
             } catch (e) {
@@ -526,11 +519,6 @@ createApp({
             } finally {
                 this.loading = false;
             }
-        },
-        getJobName(jobId) {
-            // Try to find in jobs array
-            const job = this.jobs.find(j => j.id === jobId);
-            return job ? job.jobName : `Job ${jobId}`;
         },
     },
     mounted() {
