@@ -52,7 +52,7 @@ def _get_auth_header():
     return {"Authorization": f"Bearer {token}"}
 
 
-_MAX_RESPONSE_GROUP_PAGES = 15  # ~1500 records at 100/page; stays under the 60 req/min tool quota
+_MAX_RESPONSE_GROUP_PAGES = 30  # ~15000 records at 500/page; ensure we reach older jobs
 _response_groups_lock = threading.Lock()
 
 
@@ -83,7 +83,7 @@ def _fetch_response_groups():
         try:
             from datetime import timedelta, datetime as dt
             now_dt = dt.now()
-            cutoff_dt = now_dt - timedelta(days=5)
+            cutoff_dt = now_dt - timedelta(days=14)
             date_from = cutoff_dt.isoformat()
 
             all_groups = []
@@ -92,7 +92,7 @@ def _fetch_response_groups():
                     "/api/responsegroups",
                     params={
                         "submission_date_from": date_from,
-                        "per_page": 100,
+                        "per_page": 500,
                         "page": page,
                         "sort": "-submission_date"
                     }
@@ -104,7 +104,7 @@ def _fetch_response_groups():
 
                 oldest_submission = page_groups[-1].get("submission_date")
                 oldest_age = _parse_iso_datetime(oldest_submission)
-                if oldest_age is not None and oldest_age >= 5 * 24 * 3600:
+                if oldest_age is not None and oldest_age >= 14 * 24 * 3600:
                     break
                 if len(page_groups) < 100:
                     break
