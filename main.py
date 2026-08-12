@@ -372,6 +372,28 @@ def debug_raw_api_call():
         })
 
 
+@app.route("/debug/date-range")
+def debug_date_range():
+    """Show the date range of all fetched groups."""
+    groups = _fetch_response_groups()
+    if not groups:
+        return jsonify({"error": "No groups", "count": 0})
+
+    dates = [g.get("submission_date") for g in groups]
+    dates_sorted = sorted(dates)
+
+    # Get unique dates
+    unique_dates = sorted(set(dates))
+
+    return jsonify({
+        "total_groups": len(groups),
+        "oldest_date": dates_sorted[0] if dates_sorted else None,
+        "newest_date": dates_sorted[-1] if dates_sorted else None,
+        "unique_dates_sample": unique_dates[:10] if len(unique_dates) > 10 else unique_dates,
+        "unique_dates_count": len(unique_dates)
+    })
+
+
 @app.route("/logout")
 def logout():
     return redirect(f"{AUTH_SERVICE_URL}/logout?return_url={request.url_root}")
