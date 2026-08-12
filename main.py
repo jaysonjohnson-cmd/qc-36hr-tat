@@ -91,9 +91,11 @@ def _fetch_response_groups():
                 result = get(
                     "/api/responsegroups",
                     params={
+                        "submission_date_from": date_from,
                         "per_page": 500,
                         "page": page,
-                        "sort": "submission_date"
+                        "sort": "-submission_date",
+                        "status": "N"
                     }
                 )
                 page_groups = result.get("data", [])
