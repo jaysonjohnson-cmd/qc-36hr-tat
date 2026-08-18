@@ -229,7 +229,24 @@
             <div class="refreshing">Last refresh: {{ lastRefresh }}</div>
             <div v-if="error" class="error">{{ error }}</div>
 
-            <div v-if="alerts.length === 0" class="empty">
+            <div style="margin-bottom: 20px; display: flex; gap: 15px; flex-wrap: wrap; align-items: center;">
+                <input
+                    v-model="filters.alertsSearch"
+                    type="text"
+                    placeholder="Search job names..."
+                    style="flex: 1; min-width: 200px; padding: 8px; border: 1px solid #334155; border-radius: 4px; background: #1e293b; color: #e2e8f0;"
+                >
+                <select
+                    v-model="filters.alertsVendor"
+                    style="padding: 8px; border: 1px solid #334155; border-radius: 4px; background: #1e293b; color: #e2e8f0;"
+                >
+                    <option value="">All Vendors</option>
+                    <option value="Internal">Internal</option>
+                    <option value="CF">Cloud Factory</option>
+                </select>
+            </div>
+
+            <div v-if="filteredAlerts.length === 0" class="empty">
                 <p>✓ No jobs stuck over 36 hours</p>
             </div>
 
@@ -245,7 +262,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        <tr v-for="alert in alerts" :key="alert.id">
+                        <tr v-for="alert in filteredAlerts" :key="alert.id">
                             <td>
                                 <a :href="`https://my.fieldagent.net/admin/fieldagent/responseSearch/?group_id=${alert.groupId}`" target="_blank" style="color: #0ea5e9; text-decoration: none;">
                                     {{ alert.name }}
@@ -270,7 +287,32 @@
             <div class="refreshing">Last refresh: {{ lastRefresh }}</div>
             <div v-if="error" class="error">{{ error }}</div>
 
-            <div v-if="lateReviews.length === 0" class="empty">
+            <div style="margin-bottom: 20px; display: flex; gap: 15px; flex-wrap: wrap; align-items: center;">
+                <input
+                    v-model="filters.reviewsSearch"
+                    type="text"
+                    placeholder="Search job names..."
+                    style="flex: 1; min-width: 200px; padding: 8px; border: 1px solid #334155; border-radius: 4px; background: #1e293b; color: #e2e8f0;"
+                >
+                <select
+                    v-model="filters.reviewsVendor"
+                    style="padding: 8px; border: 1px solid #334155; border-radius: 4px; background: #1e293b; color: #e2e8f0;"
+                >
+                    <option value="">All Vendors</option>
+                    <option value="Internal">Internal</option>
+                    <option value="CF">Cloud Factory</option>
+                </select>
+                <select
+                    v-model="filters.reviewsSeverity"
+                    style="padding: 8px; border: 1px solid #334155; border-radius: 4px; background: #1e293b; color: #e2e8f0;"
+                >
+                    <option value="">All Severities</option>
+                    <option value="critical">Critical</option>
+                    <option value="warning">Warning</option>
+                </select>
+            </div>
+
+            <div v-if="filteredLateReviews.length === 0" class="empty">
                 <p>✓ No TAT violations (reviews > 36 hours)</p>
             </div>
 
@@ -288,7 +330,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        <tr v-for="review in lateReviews" :key="review.id">
+                        <tr v-for="review in filteredLateReviews" :key="review.id">
                             <td>
                                 <a :href="`https://my.fieldagent.net/admin/fieldagent/responseSearch/?group_id=${review.groupId}`" target="_blank" style="color: #0ea5e9; text-decoration: none;">
                                     {{ review.name }}
@@ -398,7 +440,20 @@
             <div class="refreshing">Last refresh: {{ lastRefresh }}</div>
             <div v-if="error" class="error">{{ error }}</div>
 
-            <div v-if="bottlenecks.length === 0" class="empty">
+            <div style="margin-bottom: 20px; display: flex; gap: 15px; flex-wrap: wrap; align-items: center;">
+                <input
+                    v-model="filters.bottlenecksSearch"
+                    type="text"
+                    placeholder="Search project names..."
+                    style="flex: 1; min-width: 200px; padding: 8px; border: 1px solid #334155; border-radius: 4px; background: #1e293b; color: #e2e8f0;"
+                >
+                <label style="display: flex; align-items: center; gap: 8px; color: #94a3b8;">
+                    <input v-model="filters.bottlenecksStuckOnly" type="checkbox">
+                    Stuck jobs only
+                </label>
+            </div>
+
+            <div v-if="filteredBottlenecks.length === 0" class="empty">
                 <p>✓ No significant bottlenecks</p>
             </div>
 
@@ -415,7 +470,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        <tr v-for="bn in bottlenecks" :key="bn.project">
+                        <tr v-for="bn in filteredBottlenecks" :key="bn.project">
                             <td>
                                 <a v-if="bn.topJobId && bn.projectId" :href="`https://my.fieldagent.net/admin/fieldagent/collection-review/?job=${bn.topJobId}&project=${bn.projectId}#/`" target="_blank" style="color: #0ea5e9; text-decoration: none;">
                                     {{ bn.project }}
@@ -466,10 +521,41 @@ createApp({
                 search: '',
                 vendor: '',
                 stuckOnly: false,
+                alertsSearch: '',
+                alertsVendor: '',
+                reviewsSearch: '',
+                reviewsVendor: '',
+                reviewsSeverity: '',
+                bottlenecksSearch: '',
+                bottlenecksStuckOnly: false,
             },
         };
     },
     computed: {
+        filteredAlerts() {
+            return this.alerts.filter(alert => {
+                const matchesSearch = alert.name.toLowerCase().includes(this.filters.alertsSearch.toLowerCase()) ||
+                    alert.projectName.toLowerCase().includes(this.filters.alertsSearch.toLowerCase());
+                const matchesVendor = !this.filters.alertsVendor || alert.vendor === this.filters.alertsVendor;
+                return matchesSearch && matchesVendor;
+            });
+        },
+        filteredLateReviews() {
+            return this.lateReviews.filter(review => {
+                const matchesSearch = review.name.toLowerCase().includes(this.filters.reviewsSearch.toLowerCase()) ||
+                    review.projectName.toLowerCase().includes(this.filters.reviewsSearch.toLowerCase());
+                const matchesVendor = !this.filters.reviewsVendor || review.vendor === this.filters.reviewsVendor;
+                const matchesSeverity = !this.filters.reviewsSeverity || review.severity === this.filters.reviewsSeverity;
+                return matchesSearch && matchesVendor && matchesSeverity;
+            });
+        },
+        filteredBottlenecks() {
+            return this.bottlenecks.filter(bn => {
+                const matchesSearch = bn.project.toLowerCase().includes(this.filters.bottlenecksSearch.toLowerCase());
+                const matchesStuck = !this.filters.bottlenecksStuckOnly || bn.jobsStuck > 0;
+                return matchesSearch && matchesStuck;
+            });
+        },
         filteredJobs() {
             return this.jobs.filter(job => {
                 const matchesSearch = job.jobName.toLowerCase().includes(this.filters.search.toLowerCase()) ||
