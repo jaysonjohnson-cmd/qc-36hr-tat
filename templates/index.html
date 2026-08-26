@@ -487,7 +487,7 @@
                                 <span v-if="bn.jobsStuck > 0" class="badge stuck">{{ bn.jobsStuck }}</span>
                                 <span v-else class="badge ok">0</span>
                             </td>
-                            <td>{{ bn.avgAge }}h</td>
+                            <td>{{ bn.avgAge }}h ({{ Math.floor(bn.avgAge / 24) }}d)</td>
                             <td>
                                 <div class="vendor-pills">
                                     <div v-for="(count, vendor) in bn.vendors" :key="vendor" class="vendor-pill">
