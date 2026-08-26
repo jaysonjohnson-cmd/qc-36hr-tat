@@ -148,6 +148,10 @@
             background: #7f1d1d;
             color: #fecaca;
         }
+        .badge.at-risk {
+            background: #92400e;
+            color: #fef08a;
+        }
         .empty {
             padding: 40px 20px;
             text-align: center;
@@ -271,8 +275,8 @@
                             <td>{{ alert.projectName }}</td>
                             <td>{{ alert.vendor }}</td>
                             <td>
-                                <span class="badge" :class="alert.severity === 'critical' ? 'critical' : 'warning'">
-                                    {{ alert.stuckHours }}h
+                                <span class="badge" :class="alert.severity">
+                                    {{ alert.stuckHours }}h ({{ alert.severity }})
                                 </span>
                             </td>
                             <td>{{ alert.pendingCount }}</td>
