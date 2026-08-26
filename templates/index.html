@@ -510,7 +510,7 @@
                             <td>{{ bn.avgAge }}h ({{ Math.floor(bn.avgAge / 24) }}d)</td>
                             <td>
                                 <div class="vendor-pills">
-                                    <div v-for="(count, vendor) in bn.vendors" :key="vendor" class="vendor-pill">
+                                    <div v-for="(count, vendor) in (filters.bottlenecksVendor ? { [filters.bottlenecksVendor]: bn.vendors[filters.bottlenecksVendor] } : bn.vendors)" :key="vendor" class="vendor-pill">
                                         {{ vendor }}: {{ count }}
                                     </div>
                                 </div>
