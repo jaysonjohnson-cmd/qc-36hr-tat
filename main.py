@@ -115,7 +115,12 @@ def _fetch_response_groups():
 
             _BLOOM_CACHE["jobs"] = all_groups
             _BLOOM_CACHE["fetched_at"] = time.time()
-            logging.info(f"Successfully fetched {len(all_groups)} response groups across pages")
+            if all_groups:
+                oldest = all_groups[-1].get("submission_date")
+                oldest_age_hours = _seconds_to_hours(_parse_iso_datetime(oldest))
+                logging.info(f"Successfully fetched {len(all_groups)} response groups. Oldest: {oldest_age_hours}h old")
+            else:
+                logging.info(f"Successfully fetched {len(all_groups)} response groups across pages")
             return all_groups
         except RuntimeError as e:
             logging.error(f"AUTHENTICATION FAILED: {e}")
