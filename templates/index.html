@@ -562,11 +562,18 @@ createApp({
             });
         },
         filteredBottlenecks() {
-            return this.bottlenecks.filter(bn => {
+            const filtered = this.bottlenecks.filter(bn => {
                 const matchesSearch = bn.project.toLowerCase().includes(this.filters.bottlenecksSearch.toLowerCase());
                 const matchesStuck = !this.filters.bottlenecksStuckOnly || bn.jobsStuck > 0;
                 return matchesSearch && matchesStuck;
             });
+
+            filtered.sort((a, b) => {
+                const order = this.filters.sortOrder === 'ascending' ? 1 : -1;
+                return order * (a.avgAge - b.avgAge);
+            });
+
+            return filtered;
         },
         filteredJobs() {
             return this.jobs.filter(job => {
