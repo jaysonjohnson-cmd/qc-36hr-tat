@@ -710,7 +710,7 @@ def api_u36_bottlenecks_old():
 
 @app.route("/api/u36/alerts")
 def api_u36_alerts():
-    """Return response groups stuck >36 hours."""
+    """Return response groups at-risk (28h+) and stuck (36h+)."""
     groups = _fetch_response_groups()
 
     alerts_map = {}
@@ -726,7 +726,7 @@ def api_u36_alerts():
         age_seconds = _parse_iso_datetime(submission)
         age_hours = _seconds_to_hours(age_seconds)
 
-        if not (age_hours and age_hours >= 36):
+        if not (age_hours and age_hours >= 28):
             continue
 
         # Group by job to deduplicate, track oldest group_id
@@ -755,7 +755,7 @@ def api_u36_alerts():
             "pendingCount": alert["count"],
             "stuckHours": alert["age_hours"],
             "groupId": alert["group_id"],
-            "severity": "critical" if alert["age_hours"] >= 72 else "warning",
+            "severity": "critical" if alert["age_hours"] >= 36 else "at-risk",
         }
         for alert in alerts_map.values()
     ]
