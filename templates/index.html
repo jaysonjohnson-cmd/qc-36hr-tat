@@ -451,6 +451,14 @@
                     placeholder="Search project names..."
                     style="flex: 1; min-width: 200px; padding: 8px; border: 1px solid #334155; border-radius: 4px; background: #1e293b; color: #e2e8f0;"
                 >
+                <select
+                    v-model="filters.bottlenecksVendor"
+                    style="padding: 8px; border: 1px solid #334155; border-radius: 4px; background: #1e293b; color: #e2e8f0;"
+                >
+                    <option value="">All Vendors</option>
+                    <option value="Internal">Internal</option>
+                    <option value="CF">Cloud Factory</option>
+                </select>
                 <label style="display: flex; align-items: center; gap: 8px; color: #94a3b8;">
                     <input v-model="filters.bottlenecksStuckOnly" type="checkbox">
                     Stuck jobs only
@@ -539,7 +547,9 @@ createApp({
                 reviewsVendor: '',
                 reviewsSeverity: '',
                 bottlenecksSearch: '',
+                bottlenecksVendor: '',
                 bottlenecksStuckOnly: false,
+                sortOrder: 'descending',
             },
         };
     },
@@ -565,7 +575,8 @@ createApp({
             const filtered = this.bottlenecks.filter(bn => {
                 const matchesSearch = bn.project.toLowerCase().includes(this.filters.bottlenecksSearch.toLowerCase());
                 const matchesStuck = !this.filters.bottlenecksStuckOnly || bn.jobsStuck > 0;
-                return matchesSearch && matchesStuck;
+                const matchesVendor = !this.filters.bottlenecksVendor || bn.vendors[this.filters.bottlenecksVendor];
+                return matchesSearch && matchesStuck && matchesVendor;
             });
 
             filtered.sort((a, b) => {
