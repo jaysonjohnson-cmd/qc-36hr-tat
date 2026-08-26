@@ -451,6 +451,14 @@
                     <input v-model="filters.bottlenecksStuckOnly" type="checkbox">
                     Stuck jobs only
                 </label>
+                <div style="display: flex; gap: 4px; background: #1e293b; border: 1px solid #334155; border-radius: 4px; padding: 2px;">
+                    <button @click="filters.sortOrder = 'ascending'" :style="{ padding: '6px 12px', background: filters.sortOrder === 'ascending' ? '#0ea5e9' : 'transparent', border: 'none', borderRadius: '3px', color: '#e2e8f0', cursor: 'pointer', fontSize: '12px', fontWeight: '500' }">
+                        ↑ Asc
+                    </button>
+                    <button @click="filters.sortOrder = 'descending'" :style="{ padding: '6px 12px', background: filters.sortOrder === 'descending' ? '#0ea5e9' : 'transparent', border: 'none', borderRadius: '3px', color: '#e2e8f0', cursor: 'pointer', fontSize: '12px', fontWeight: '500' }">
+                        ↓ Desc
+                    </button>
+                </div>
             </div>
 
             <div v-if="filteredBottlenecks.length === 0" class="empty">
