@@ -52,7 +52,7 @@ def _get_auth_header():
     return {"Authorization": f"Bearer {token}"}
 
 
-_MAX_RESPONSE_GROUP_PAGES = 30  # ~15000 records at 500/page; ensure we reach older jobs
+_MAX_RESPONSE_GROUP_PAGES = 100  # ~10000 records at 100/page (API caps at 100); ensure we reach older jobs
 _response_groups_lock = threading.Lock()
 
 
