@@ -1,6 +1,7 @@
 import logging
 import os
 import pathlib
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -193,6 +194,24 @@ def _get_job_name(job_id):
     return name or f"Job {job_id}"
 
 
+# OSI work is excluded from the dashboard. The API has no OSI flag, so we match
+# "OSI" as a whole word in the job or project name ("OSI", "OSI July 2026") —
+# the word boundary keeps names like "Hoosier Hill Farm" from matching.
+_OSI_PATTERN = re.compile(r"\bOSI\b", re.IGNORECASE)
+
+
+def _is_osi(job_id, project_id):
+    """True if the job or project name marks this as OSI work.
+
+    Project is checked first: many OSI jobs share one project, so one project
+    lookup can rule out a whole batch without spending a job lookup on each.
+    """
+    return bool(
+        _OSI_PATTERN.search(_get_project_name(project_id))
+        or _OSI_PATTERN.search(_get_job_name(job_id))
+    )
+
+
 @app.before_request
 def require_auth():
     if request.path == "/health":
@@ -306,6 +325,8 @@ def api_u36_jobs():
 
     result = []
     for job_id, job_data in jobs_map.items():
+        if _is_osi(job_id, job_data["project_id"]):
+            continue
         age_hours = _seconds_to_hours(job_data["age_seconds"])
 
         result.append({
@@ -348,10 +369,14 @@ def api_u36_bottlenecks():
 
     ages_by_project = defaultdict(list)
 
+    # Unreviewed, non-OSI groups — both loops below work from this list.
+    groups = [
+        group for group in groups
+        if not group.get("first_review_ts")
+        and not _is_osi(group.get("job_id"), group.get("project_id"))
+    ]
+
     for group in groups:
-        # Skip reviewed groups
-        if group.get("first_review_ts"):
-            continue
 
         project_id = group.get("project_id", "unknown")
         project = _get_project_name(project_id)
@@ -377,8 +402,6 @@ def api_u36_bottlenecks():
     # request so they start fresh on every refresh.
     job_counts = defaultdict(int)
     for group in groups:
-        if group.get("first_review_ts"):
-            continue
         project = _get_project_name(group.get("project_id", "unknown"))
         job_id = group.get("job_id")
         if project in bottlenecks:
@@ -465,6 +488,7 @@ def api_u36_alerts():
             "severity": "critical" if alert["age_hours"] >= 36 else "at-risk",
         }
         for alert in alerts_map.values()
+        if not _is_osi(alert["job_id"], alert["project_id"])
     ]
 
     # Sort by hours stuck (most critical first)
@@ -550,6 +574,7 @@ def api_u36_late_reviews():
             "severity": "critical" if v["tat_hours"] >= 72 else "warning",
         }
         for v in violations_map.values()
+        if not _is_osi(v["job_id"], v["project_id"])
     ]
 
     # Sort by TAT hours (worst first)
