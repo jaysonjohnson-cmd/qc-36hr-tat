@@ -3,7 +3,7 @@ import os
 import pathlib
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import defaultdict
 
 import jwt
@@ -24,32 +24,13 @@ INTERNAL_API_BASE = os.environ.get("INTERNAL_API_BASE", "https://internal-tool-a
 
 # Cache for data (60s TTL)
 _BLOOM_CACHE = {"jobs": None, "fetched_at": 0.0}
-_PROJECTS_CACHE = {"data": {}, "fetched_at": 0.0}
+_NAMES_CACHE = {}  # "projects" / "jobs" -> {id: name}; names never change, so no TTL
 _CACHE_TTL = 60
 
 
 def _dev_token_path():
     """Return the path to the dev token file."""
     return pathlib.Path.home() / ".storesight" / "dev-token"
-
-
-def _get_auth_header():
-    """Return Authorization header for Internal API."""
-    if LOCAL_DEV:
-        token = _dev_token_path().read_text().strip()
-    else:
-        # In production, get OIDC token from Cloud Run metadata server
-        try:
-            import google.auth
-            import google.auth.transport.requests
-            credentials, _ = google.auth.default()
-            request = google.auth.transport.requests.Request()
-            credentials.refresh(request)
-            token = credentials.token
-        except Exception as e:
-            logging.error(f"Failed to get OIDC token: {e}")
-            token = ""
-    return {"Authorization": f"Bearer {token}"}
 
 
 _MAX_RESPONSE_GROUP_PAGES = 100  # ~10000 records at 100/page (API caps at 100); ensure we reach older jobs
@@ -61,8 +42,7 @@ def _fetch_response_groups():
 
     The API caps per_page at 100 regardless of what we ask for, and returns
     newest-first, so a single request only ever gets today's submissions.
-    Page through until we either run out of results, hit the age cutoff, or
-    hit the page cap.
+    Page through until we either run out of results or hit the page cap.
 
     The 4 dashboard tabs all call this on every refresh. Without
     coordination, each would kick off its own multi-page sweep at the same
@@ -86,7 +66,7 @@ def _fetch_response_groups():
                 result = get(
                     "/api/responsegroups",
                     params={
-                        "per_page": 500,
+                        "per_page": 100,  # API max
                         "page": page,
                         "sort": "-submission_date",
                         "status": "N"
@@ -136,9 +116,11 @@ def _parse_iso_datetime(dt_str):
             from email.utils import parsedate_to_datetime
             dt = parsedate_to_datetime(dt_str)
 
-        # Make timezone-aware comparison
-        now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
-        age_seconds = (now - dt).total_seconds()
+        # Timestamps without a timezone are UTC — compare against UTC, not the
+        # server's local clock (which would skew ages by hours when run locally).
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age_seconds = (datetime.now(timezone.utc) - dt).total_seconds()
         return max(0, age_seconds)
     except Exception as e:
         logging.warning(f"Failed to parse datetime '{dt_str}': {e}")
@@ -152,69 +134,63 @@ def _seconds_to_hours(seconds):
     return round(seconds / 3600, 1)
 
 
-def _get_project_name(job):
-    """Extract project name from job."""
-    return job.get("project_name") or f"Project {job.get('project_id', 'unknown')}"
+_names_lock = threading.Lock()
+_NAME_LOOKUPS_PER_MINUTE = 30  # leaves headroom under the 60 req/min tool quota
+_name_lookup_window = {"start": 0.0, "used": 0}
 
 
-def _get_vendor(job):
-    """Extract review vendor (internal or third-party)."""
-    vendor = job.get("tp_review_company") or ""
-    return vendor if vendor else "Internal"
+def _lookup_name(kind, path, id_param, name_field, item_id):
+    """Look up one job or project name by ID, caching it for the life of the process.
 
+    There are millions of jobs/projects, so we can't download a full id -> name
+    list, and the API doesn't accept multiple IDs per request. Instead we look
+    up only the IDs the dashboard actually shows. Names don't change, so each
+    ID costs one API call ever. Lookups are capped per minute so a cold start
+    can't eat the rate limit; anything over the cap returns None (the caller
+    shows a placeholder) and is filled in on a later refresh.
+    """
+    key = str(item_id)
+    cache = _NAMES_CACHE.setdefault(kind, {})
+    if key in cache:
+        return cache[key]
 
-def _fetch_project_names():
-    """Fetch project name mapping (project_id -> name)."""
-    now = time.time()
-    if _PROJECTS_CACHE["data"] and (now - _PROJECTS_CACHE["fetched_at"]) < _CACHE_TTL * 2:
-        return _PROJECTS_CACHE["data"]
+    with _names_lock:
+        if key in cache:
+            return cache[key]
 
-    try:
-        result = get("/api/projects", params={"per_page": 500})
-        projects = result.get("data", [])
-        name_map = {str(p.get("id", "")): p.get("name", f"Project {p.get('id')}") for p in projects}
-        _PROJECTS_CACHE["data"] = name_map
-        _PROJECTS_CACHE["fetched_at"] = now
-        logging.info(f"Fetched {len(name_map)} project names")
-        return name_map
-    except Exception as e:
-        logging.warning(f"Failed to fetch project names: {e}")
-        return _PROJECTS_CACHE["data"]
+        now = time.time()
+        if now - _name_lookup_window["start"] >= 60:
+            _name_lookup_window["start"] = now
+            _name_lookup_window["used"] = 0
+        if _name_lookup_window["used"] >= _NAME_LOOKUPS_PER_MINUTE:
+            return None
+        _name_lookup_window["used"] += 1
+
+        try:
+            result = get(path, params={id_param: item_id, "per_page": 1})
+            items = result.get("data", [])
+            cache[key] = items[0].get(name_field) if items else None
+        except Exception as e:
+            # Not cached, so it's retried on a later refresh (still within the cap).
+            logging.warning(f"Failed to look up {kind} name for {item_id}: {e}")
+            return None
+        return cache[key]
 
 
 def _get_project_name(project_id):
     """Get project name by ID."""
     if not project_id:
         return "Unknown"
-    projects = _fetch_project_names()
-    return projects.get(str(project_id), f"Project {project_id}")
-
-
-def _fetch_job_names():
-    """Fetch job name mapping (job_id -> name)."""
-    now = time.time()
-    if _PROJECTS_CACHE.get("jobs") and (now - _PROJECTS_CACHE.get("jobs_fetched_at", 0)) < _CACHE_TTL * 2:
-        return _PROJECTS_CACHE.get("jobs", {})
-
-    try:
-        result = get("/api/jobs", params={"per_page": 500})
-        jobs = result.get("data", [])
-        name_map = {str(j.get("id", "")): j.get("name", f"Job {j.get('id')}") for j in jobs}
-        _PROJECTS_CACHE["jobs"] = name_map
-        _PROJECTS_CACHE["jobs_fetched_at"] = now
-        logging.info(f"Fetched {len(name_map)} job names")
-        return name_map
-    except Exception as e:
-        logging.warning(f"Failed to fetch job names: {e}")
-        return _PROJECTS_CACHE.get("jobs", {})
+    name = _lookup_name("projects", "/api/projects", "project_id", "title", project_id)
+    return name or f"Project {project_id}"
 
 
 def _get_job_name(job_id):
     """Get job name by ID."""
     if not job_id:
         return "Unknown"
-    jobs = _fetch_job_names()
-    return jobs.get(str(job_id), f"Job {job_id}")
+    name = _lookup_name("jobs", "/api/jobs", "job_id", "name", job_id)
+    return name or f"Job {job_id}"
 
 
 @app.before_request
@@ -274,122 +250,6 @@ def health():
     return jsonify({"status": "ok"})
 
 
-@app.route("/debug/test-data")
-def debug_test_data():
-    """Return sample test data for debugging - remove in production."""
-    return jsonify({
-        "jobs": [
-            {"id": "1", "jobName": "Test Job A", "projectName": "Project 1", "vendor": "Internal", "pendingCount": 5, "oldestSubmissionAge": 45.2, "oldestSubmissionStuck": True},
-            {"id": "2", "jobName": "Test Job B", "projectName": "Project 2", "vendor": "Vendor X", "pendingCount": 3, "oldestSubmissionAge": 20.1, "oldestSubmissionStuck": False},
-        ],
-        "alerts": [
-            {"id": "1", "projectName": "Project 1", "vendor": "Internal", "pendingCount": 5, "stuckHours": 45.2, "severity": "critical"},
-        ],
-        "lateReviews": [
-            {"id": "1", "projectName": "Project 1", "vendor": "Internal", "responseCount": 2, "tatHours": 48.5, "severity": "critical"},
-        ],
-        "bottlenecks": [
-            {"project": "Project 1", "projectId": "p1", "pendingSubmissions": 10, "jobCount": 2, "stuck": 1, "avgAge": 35.5, "vendors": {"Internal": 10}},
-        ]
-    })
-
-
-@app.route("/debug/api-response")
-def debug_api_response():
-    """Show raw response from Bloom API for debugging."""
-    try:
-        groups = _fetch_response_groups()
-        if not groups:
-            return jsonify({"error": "No groups returned from API", "count": 0})
-
-        # Show first few groups to understand structure
-        sample = groups[:3] if len(groups) > 3 else groups
-
-        return jsonify({
-            "total_count": len(groups),
-            "sample_count": len(sample),
-            "sample_groups": sample,
-            "fields_in_first_group": list(groups[0].keys()) if groups else [],
-        })
-    except Exception as e:
-        return jsonify({"error": str(e), "type": type(e).__name__})
-
-
-@app.route("/debug/late-reviews-debug")
-def debug_late_reviews():
-    """Debug endpoint showing late-reviews processing."""
-    groups = _fetch_response_groups()
-
-    if not groups:
-        return jsonify({"error": "No groups from API", "reviewed_count": 0})
-
-    reviewed_groups = [g for g in groups if g.get("first_review_ts")]
-
-    return jsonify({
-        "total_groups": len(groups),
-        "groups_with_review": len(reviewed_groups),
-        "sample_reviewed": reviewed_groups[:2] if reviewed_groups else [],
-        "sample_unreviewed": [g for g in groups if not g.get("first_review_ts")][:2],
-    })
-
-
-@app.route("/debug/raw-api-call")
-def debug_raw_api_call():
-    """Test raw API call to Bloom."""
-    try:
-        logging.info("Attempting direct API call to /api/responsegroups")
-        from datetime import timedelta, datetime as dt
-        now_dt = dt.now()
-        date_from = (now_dt - timedelta(days=7)).isoformat()
-
-        result = get(
-            "/api/responsegroups",
-            params={
-                "submission_date_from": date_from,
-                "per_page": 500,
-                "sort": "-submission_date"
-            }
-        )
-        return jsonify({
-            "success": True,
-            "result_type": type(result).__name__,
-            "result_keys": list(result.keys()) if isinstance(result, dict) else "not a dict",
-            "data_count": len(result.get("data", [])) if isinstance(result, dict) else 0,
-            "first_result": result.get("data", [{}])[0] if isinstance(result, dict) and result.get("data") else None,
-            "raw_result": result
-        })
-    except Exception as e:
-        import traceback
-        return jsonify({
-            "success": False,
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "traceback": traceback.format_exc()
-        })
-
-
-@app.route("/debug/date-range")
-def debug_date_range():
-    """Show the date range of all fetched groups."""
-    groups = _fetch_response_groups()
-    if not groups:
-        return jsonify({"error": "No groups", "count": 0})
-
-    dates = [g.get("submission_date") for g in groups]
-    dates_sorted = sorted(dates)
-
-    # Get unique dates
-    unique_dates = sorted(set(dates))
-
-    return jsonify({
-        "total_groups": len(groups),
-        "oldest_date": dates_sorted[0] if dates_sorted else None,
-        "newest_date": dates_sorted[-1] if dates_sorted else None,
-        "unique_dates_sample": unique_dates[:10] if len(unique_dates) > 10 else unique_dates,
-        "unique_dates_count": len(unique_dates)
-    })
-
-
 @app.route("/logout")
 def logout():
     return redirect(f"{AUTH_SERVICE_URL}/logout?return_url={request.url_root}")
@@ -426,20 +286,27 @@ def api_u36_jobs():
         if not submission:
             continue
 
+        age_seconds = _parse_iso_datetime(submission)
+
         if job_id not in jobs_map:
             jobs_map[job_id] = {
                 "job_id": job_id,
                 "project_id": group.get("project_id"),
-                "submission_date": submission,
+                "age_seconds": age_seconds,
                 "tp_review_company": group.get("tp_review_company"),
                 "count": 0,
             }
+        elif age_seconds is not None and (
+            jobs_map[job_id]["age_seconds"] is None or age_seconds > jobs_map[job_id]["age_seconds"]
+        ):
+            # Keep the oldest submission — the API returns newest first, so
+            # the first one we see for a job is usually its newest.
+            jobs_map[job_id]["age_seconds"] = age_seconds
         jobs_map[job_id]["count"] += 1
 
     result = []
     for job_id, job_data in jobs_map.items():
-        age_seconds = _parse_iso_datetime(job_data["submission_date"])
-        age_hours = _seconds_to_hours(age_seconds)
+        age_hours = _seconds_to_hours(job_data["age_seconds"])
 
         result.append({
             "id": str(job_id),
@@ -449,70 +316,7 @@ def api_u36_jobs():
             "vendor": job_data["tp_review_company"] or "Internal",
             "pendingCount": job_data["count"],
             "oldestSubmissionAge": age_hours,
-            "oldestSubmissionStuck": age_hours >= 36 if age_hours else None,
-        })
-
-    # Sort by age (oldest first)
-    result.sort(key=lambda x: (
-        x["oldestSubmissionAge"] is None,
-        -(x["oldestSubmissionAge"] or 0),
-        -x["pendingCount"]
-    ))
-
-    logging.info(f"GET /api/u36/jobs by={g.user.get('email')} count={len(result)}")
-    return jsonify({"data": result})
-
-
-@app.route("/api/u36/jobs_old")
-def api_u36_jobs_old():
-    """Return response groups with submission age, sorted by oldest first."""
-    groups = _fetch_response_groups()
-
-    # Group by job_id to get oldest submission per job
-    jobs_map = {}
-    for group in groups:
-        job_id = group.get("job_id")
-        if not job_id:
-            continue
-
-        # Skip reviewed groups
-        first_review = group.get("first_review_ts")
-        if first_review:
-            continue
-
-        # Skip test/screener/ticket jobs (status-based filtering)
-        status = group.get("status", "")
-        if status in ("D", "R"):  # Denied or rejected
-            continue
-
-        submission = group.get("submission_date")
-        if not submission:
-            continue
-
-        if job_id not in jobs_map:
-            jobs_map[job_id] = {
-                "job_id": job_id,
-                "project_id": group.get("project_id"),
-                "submission_date": submission,
-                "tp_review_company": group.get("tp_review_company"),
-                "count": 0,
-            }
-        jobs_map[job_id]["count"] += 1
-
-    result = []
-    for job_id, job_data in jobs_map.items():
-        age_seconds = _parse_iso_datetime(job_data["submission_date"])
-        age_hours = _seconds_to_hours(age_seconds)
-
-        result.append({
-            "id": str(job_id),
-            "jobName": _get_job_name(job_id),
-            "projectId": job_data["project_id"],
-            "projectName": _get_project_name(job_data["project_id"]),
-            "vendor": job_data["tp_review_company"] or "Internal",
-            "pendingCount": job_data["count"],
-            "oldestSubmissionAge": age_hours,
-            "oldestSubmissionStuck": age_hours >= 36 if age_hours else None,
+            "oldestSubmissionStuck": age_hours >= 36 if age_hours is not None else None,
         })
 
     # Sort by age (oldest first)
@@ -566,110 +370,23 @@ def api_u36_bottlenecks():
         if age_hours and age_hours >= 36:
             bottlenecks[project]["stuck"] += 1
 
-        if age_hours:
+        if age_hours is not None:
             ages_by_project[project].append(age_hours)
 
-    # Find top job per project (most pending)
+    # Find top job per project (most pending). Counts are local to this
+    # request so they start fresh on every refresh.
+    job_counts = defaultdict(int)
     for group in groups:
         if group.get("first_review_ts"):
             continue
         project = _get_project_name(group.get("project_id", "unknown"))
         job_id = group.get("job_id")
         if project in bottlenecks:
-            # Count pending per job for this project
-            job_key = f"{project}_{job_id}"
-            if not hasattr(api_u36_bottlenecks, "_job_counts"):
-                api_u36_bottlenecks._job_counts = defaultdict(int)
-            api_u36_bottlenecks._job_counts[job_key] += 1
+            job_key = (project, job_id)
+            job_counts[job_key] += 1
 
-            if api_u36_bottlenecks._job_counts[job_key] > bottlenecks[project]["top_job_pending"]:
-                bottlenecks[project]["top_job_pending"] = api_u36_bottlenecks._job_counts[job_key]
-                bottlenecks[project]["top_job_id"] = job_id
-
-    # Calculate average age per project
-    for project, ages in ages_by_project.items():
-        if ages:
-            bottlenecks[project]["avgAge"] = round(sum(ages) / len(ages), 1)
-
-    result = [
-        {
-            "project": project,
-            "projectId": data["project_id"],
-            "topJobId": data["top_job_id"],
-            "pendingSubmissions": data["pending"],
-            "jobsStuck": data["stuck"],
-            "jobCount": len(data["jobCount"]),
-            "avgAge": data["avgAge"],
-            "vendors": dict(data["vendors"]),
-        }
-        for project, data in bottlenecks.items()
-    ]
-
-    # Sort by pending count (most problematic first)
-    result.sort(key=lambda x: -x["pendingSubmissions"])
-
-    logging.info(f"GET /api/u36/bottlenecks by={g.user.get('email')} projects={len(result)}")
-    return jsonify({"data": result})
-
-
-@app.route("/api/u36/bottlenecks_old")
-def api_u36_bottlenecks_old():
-    """Return bottleneck analysis by project and vendor."""
-    groups = _fetch_response_groups()
-
-    bottlenecks = defaultdict(lambda: {
-        "pending": 0,
-        "stuck": 0,
-        "avgAge": 0,
-        "jobCount": set(),
-        "vendors": defaultdict(int),
-        "project_id": None,
-        "top_job_id": None,
-        "top_job_pending": 0,
-    })
-
-    ages_by_project = defaultdict(list)
-
-    for group in groups:
-        # Skip reviewed groups
-        if group.get("first_review_ts"):
-            continue
-
-        project_id = group.get("project_id", "unknown")
-        project = _get_project_name(project_id)
-        vendor = group.get("tp_review_company") or "Internal"
-        submission = group.get("submission_date")
-        job_id = group.get("job_id")
-
-        age_seconds = _parse_iso_datetime(submission)
-        age_hours = _seconds_to_hours(age_seconds)
-
-        bottlenecks[project]["pending"] += 1
-        bottlenecks[project]["project_id"] = project_id
-        bottlenecks[project]["jobCount"].add(job_id)
-        bottlenecks[project]["vendors"][vendor] += 1
-
-        if age_hours and age_hours >= 36:
-            bottlenecks[project]["stuck"] += 1
-
-        if age_hours:
-            ages_by_project[project].append(age_hours)
-
-    # Find top job per project (most pending)
-    for group in groups:
-        if group.get("first_review_ts"):
-            continue
-        project = _get_project_name(group.get("project_id", "unknown"))
-        job_id = group.get("job_id")
-        if project in bottlenecks:
-            # Count pending per job for this project
-            job_key = f"{project}_{job_id}"
-            if not hasattr(api_u36_bottlenecks, "_job_counts"):
-                api_u36_bottlenecks._job_counts = defaultdict(int)
-            api_u36_bottlenecks._job_counts[job_key] += 1
-
-            if api_u36_bottlenecks._job_counts[job_key] > bottlenecks[project]["top_job_pending"]:
-                bottlenecks[project]["top_job_pending"] = api_u36_bottlenecks._job_counts[job_key]
+            if job_counts[job_key] > bottlenecks[project]["top_job_pending"]:
+                bottlenecks[project]["top_job_pending"] = job_counts[job_key]
                 bottlenecks[project]["top_job_id"] = job_id
 
     # Calculate average age per project
@@ -746,64 +463,6 @@ def api_u36_alerts():
             "stuckHours": alert["age_hours"],
             "groupId": alert["group_id"],
             "severity": "critical" if alert["age_hours"] >= 36 else "at-risk",
-        }
-        for alert in alerts_map.values()
-    ]
-
-    # Sort by hours stuck (most critical first)
-    alerts.sort(key=lambda x: -x["stuckHours"])
-
-    logging.info(f"GET /api/u36/alerts by={g.user.get('email')} count={len(alerts)}")
-    return jsonify({"data": alerts})
-
-
-@app.route("/api/u36/alerts_old")
-def api_u36_alerts_old():
-    """Return response groups stuck >36 hours."""
-    groups = _fetch_response_groups()
-
-    alerts_map = {}
-    for group in groups:
-        # Skip reviewed groups
-        if group.get("first_review_ts"):
-            continue
-
-        submission = group.get("submission_date")
-        job_id = group.get("job_id")
-        group_id = group.get("id")
-
-        age_seconds = _parse_iso_datetime(submission)
-        age_hours = _seconds_to_hours(age_seconds)
-
-        if not (age_hours and age_hours >= 36):
-            continue
-
-        # Group by job to deduplicate, track oldest group_id
-        if job_id not in alerts_map:
-            alerts_map[job_id] = {
-                "job_id": job_id,
-                "project_id": group.get("project_id"),
-                "vendor": group.get("tp_review_company") or "Internal",
-                "age_hours": age_hours,
-                "group_id": group_id,
-                "count": 0,
-            }
-        else:
-            # Keep the oldest (highest age)
-            if age_hours > alerts_map[job_id]["age_hours"]:
-                alerts_map[job_id]["age_hours"] = age_hours
-                alerts_map[job_id]["group_id"] = group_id
-        alerts_map[job_id]["count"] += 1
-
-    alerts = [
-        {
-            "id": str(alert["job_id"]),
-            "projectName": _get_project_name(alert["project_id"]),
-            "vendor": alert["vendor"],
-            "pendingCount": alert["count"],
-            "stuckHours": alert["age_hours"],
-            "groupId": alert["group_id"],
-            "severity": "critical" if alert["age_hours"] >= 72 else "warning",
         }
         for alert in alerts_map.values()
     ]
@@ -900,91 +559,6 @@ def api_u36_late_reviews():
         f"GET /api/u36/late-reviews by={g.user.get('email')} total_groups={len(groups)} "
         f"reviewed_late={reviewed_late_count} still_pending={still_pending_count} violations={len(violations)}"
     )
-    return jsonify({"data": violations})
-
-
-@app.route("/api/u36/late-reviews_old")
-def api_u36_late_reviews_old():
-    """Return jobs reviewed after 36 hours (TAT violations)."""
-    groups = _fetch_response_groups()
-
-    logging.info(f"Late reviews: checking {len(groups)} groups")
-
-    violations_map = {}
-    reviewed_count = 0
-    for group in groups:
-        submission = group.get("submission_date")
-        review_time = group.get("first_review_ts")
-        job_id = group.get("job_id")
-        group_id = group.get("id")
-
-        # Only include reviewed groups
-        if not review_time:
-            continue
-
-        reviewed_count += 1
-
-        # Calculate time to review
-        try:
-            from email.utils import parsedate_to_datetime
-
-            # Parse submission time
-            try:
-                sub_dt = datetime.fromisoformat(submission.replace("Z", "+00:00"))
-            except:
-                sub_dt = parsedate_to_datetime(submission) if submission else None
-
-            # Parse review time
-            try:
-                rev_dt = datetime.fromisoformat(review_time.replace("Z", "+00:00"))
-            except:
-                rev_dt = parsedate_to_datetime(review_time) if review_time else None
-
-            if not sub_dt or not rev_dt:
-                continue
-
-            tat_seconds = (rev_dt - sub_dt).total_seconds()
-            tat_hours = _seconds_to_hours(tat_seconds)
-        except Exception as e:
-            logging.warning(f"Failed to calc TAT for group {group_id}: {e}")
-            continue
-
-        if not (tat_hours and tat_hours >= 36):
-            continue
-
-        # Group by job, track worst (longest TAT) group_id
-        if job_id not in violations_map:
-            violations_map[job_id] = {
-                "job_id": job_id,
-                "project_id": group.get("project_id"),
-                "vendor": group.get("tp_review_company") or "Internal",
-                "tat_hours": tat_hours,
-                "group_id": group_id,
-                "count": 0,
-            }
-        else:
-            if tat_hours > violations_map[job_id]["tat_hours"]:
-                violations_map[job_id]["tat_hours"] = tat_hours
-                violations_map[job_id]["group_id"] = group_id
-        violations_map[job_id]["count"] += 1
-
-    violations = [
-        {
-            "id": str(v["job_id"]),
-            "projectName": _get_project_name(v["project_id"]),
-            "vendor": v["vendor"],
-            "responseCount": v["count"],
-            "tatHours": v["tat_hours"],
-            "groupId": v["group_id"],
-            "severity": "critical" if v["tat_hours"] >= 72 else "warning",
-        }
-        for v in violations_map.values()
-    ]
-
-    # Sort by TAT hours (worst first)
-    violations.sort(key=lambda x: -x["tatHours"])
-
-    logging.info(f"GET /api/u36/late-reviews by={g.user.get('email')} total_groups={len(groups)} reviewed={reviewed_count} violations={len(violations)}")
     return jsonify({"data": violations})
 
 
