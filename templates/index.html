@@ -108,6 +108,22 @@
             background: #0f172a;
             border-bottom: 1px solid #334155;
         }
+        th.sortable {
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+        th.sortable:hover {
+            color: #e2e8f0;
+        }
+        .sort-arrow {
+            margin-left: 4px;
+            opacity: 0.4;
+        }
+        .sort-arrow.active {
+            opacity: 1;
+            color: #0ea5e9;
+        }
         th {
             padding: 14px 16px;
             text-align: left;
@@ -411,8 +427,12 @@
                         <tr>
                             <th>Job Name</th>
                             <th>Project</th>
-                            <th>Pending</th>
-                            <th>Oldest Sub (hours)</th>
+                            <th class="sortable" @click="toggleJobSort('pendingCount')">
+                                Pending <span class="sort-arrow" :class="{ active: jobSort.key === 'pendingCount' }">{{ jobSortArrow('pendingCount') }}</span>
+                            </th>
+                            <th class="sortable" @click="toggleJobSort('oldestSubmissionAge')">
+                                Oldest Sub (hours) <span class="sort-arrow" :class="{ active: jobSort.key === 'oldestSubmissionAge' }">{{ jobSortArrow('oldestSubmissionAge') }}</span>
+                            </th>
                             <th>Vendor</th>
                         </tr>
                     </thead>
@@ -551,6 +571,8 @@ createApp({
                 bottlenecksStuckOnly: false,
                 sortOrder: 'descending',
             },
+            // Job Queue column sort; key null keeps the server's order.
+            jobSort: { key: null, dir: 'desc' },
         };
     },
     computed: {
@@ -587,12 +609,23 @@ createApp({
             return filtered;
         },
         filteredJobs() {
-            return this.jobs.filter(job => {
+            const filtered = this.jobs.filter(job => {
                 const matchesSearch = job.jobName.toLowerCase().includes(this.filters.search.toLowerCase()) ||
                     job.id.toString().includes(this.filters.search);
                 const matchesVendor = !this.filters.vendor || job.vendor === this.filters.vendor;
                 const matchesStuck = !this.filters.stuckOnly || job.oldestSubmissionStuck;
                 return matchesSearch && matchesVendor && matchesStuck;
+            });
+            const { key, dir } = this.jobSort;
+            if (!key) return filtered;
+            const order = dir === 'asc' ? 1 : -1;
+            // Jobs with no value (shown as —) always go last.
+            return filtered.slice().sort((a, b) => {
+                const av = a[key], bv = b[key];
+                const aMissing = av === null || av === undefined || av === '';
+                const bMissing = bv === null || bv === undefined || bv === '';
+                if (aMissing || bMissing) return aMissing - bMissing;
+                return order * (av - bv);
             });
         },
         totalPending() {
@@ -608,6 +641,17 @@ createApp({
         },
     },
     methods: {
+        toggleJobSort(key) {
+            if (this.jobSort.key === key) {
+                this.jobSort.dir = this.jobSort.dir === 'desc' ? 'asc' : 'desc';
+            } else {
+                this.jobSort = { key, dir: 'desc' };
+            }
+        },
+        jobSortArrow(key) {
+            if (this.jobSort.key !== key) return '⇅';
+            return this.jobSort.dir === 'desc' ? '▼' : '▲';
+        },
         async fetchData() {
             this.loading = true;
             this.error = null;
