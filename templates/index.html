@@ -277,8 +277,12 @@
                             <th>Job Name</th>
                             <th>Project</th>
                             <th>Vendor</th>
-                            <th>Stuck (hours)</th>
-                            <th>Pending</th>
+                            <th class="sortable" @click="toggleSort('alerts', 'stuckHours')">
+                                Stuck (hours) <span class="sort-arrow" :class="{ active: sorts.alerts.key === 'stuckHours' }">{{ sortArrow('alerts', 'stuckHours') }}</span>
+                            </th>
+                            <th class="sortable" @click="toggleSort('alerts', 'pendingCount')">
+                                Pending <span class="sort-arrow" :class="{ active: sorts.alerts.key === 'pendingCount' }">{{ sortArrow('alerts', 'pendingCount') }}</span>
+                            </th>
                         </tr>
                     </thead>
                     <tbody>
@@ -343,8 +347,12 @@
                             <th>Job Name</th>
                             <th>Project</th>
                             <th>Vendor</th>
-                            <th>TAT (hours)</th>
-                            <th>Responses</th>
+                            <th class="sortable" @click="toggleSort('reviews', 'tatHours')">
+                                TAT (hours) <span class="sort-arrow" :class="{ active: sorts.reviews.key === 'tatHours' }">{{ sortArrow('reviews', 'tatHours') }}</span>
+                            </th>
+                            <th class="sortable" @click="toggleSort('reviews', 'responseCount')">
+                                Responses <span class="sort-arrow" :class="{ active: sorts.reviews.key === 'responseCount' }">{{ sortArrow('reviews', 'responseCount') }}</span>
+                            </th>
                             <th>Status</th>
                             <th>Severity</th>
                         </tr>
@@ -427,11 +435,11 @@
                         <tr>
                             <th>Job Name</th>
                             <th>Project</th>
-                            <th class="sortable" @click="toggleJobSort('pendingCount')">
-                                Pending <span class="sort-arrow" :class="{ active: jobSort.key === 'pendingCount' }">{{ jobSortArrow('pendingCount') }}</span>
+                            <th class="sortable" @click="toggleSort('jobs', 'pendingCount')">
+                                Pending <span class="sort-arrow" :class="{ active: sorts.jobs.key === 'pendingCount' }">{{ sortArrow('jobs', 'pendingCount') }}</span>
                             </th>
-                            <th class="sortable" @click="toggleJobSort('oldestSubmissionAge')">
-                                Oldest Sub (hours) <span class="sort-arrow" :class="{ active: jobSort.key === 'oldestSubmissionAge' }">{{ jobSortArrow('oldestSubmissionAge') }}</span>
+                            <th class="sortable" @click="toggleSort('jobs', 'oldestSubmissionAge')">
+                                Oldest Sub (hours) <span class="sort-arrow" :class="{ active: sorts.jobs.key === 'oldestSubmissionAge' }">{{ sortArrow('jobs', 'oldestSubmissionAge') }}</span>
                             </th>
                             <th>Vendor</th>
                         </tr>
@@ -483,14 +491,6 @@
                     <input v-model="filters.bottlenecksStuckOnly" type="checkbox">
                     Stuck jobs only
                 </label>
-                <div style="display: flex; gap: 4px; background: #1e293b; border: 1px solid #334155; border-radius: 4px; padding: 2px;">
-                    <button @click="filters.sortOrder = 'ascending'" :style="{ padding: '6px 12px', background: filters.sortOrder === 'ascending' ? '#0ea5e9' : 'transparent', border: 'none', borderRadius: '3px', color: '#e2e8f0', cursor: 'pointer', fontSize: '12px', fontWeight: '500' }">
-                        ↑ Asc
-                    </button>
-                    <button @click="filters.sortOrder = 'descending'" :style="{ padding: '6px 12px', background: filters.sortOrder === 'descending' ? '#0ea5e9' : 'transparent', border: 'none', borderRadius: '3px', color: '#e2e8f0', cursor: 'pointer', fontSize: '12px', fontWeight: '500' }">
-                        ↓ Desc
-                    </button>
-                </div>
             </div>
 
             <div v-if="filteredBottlenecks.length === 0" class="empty">
@@ -502,10 +502,18 @@
                     <thead>
                         <tr>
                             <th>Project</th>
-                            <th>Pending</th>
-                            <th>Jobs</th>
-                            <th>Stuck (36h+)</th>
-                            <th>Avg Age (hours)</th>
+                            <th class="sortable" @click="toggleSort('bottlenecks', 'pendingSubmissions')">
+                                Pending <span class="sort-arrow" :class="{ active: sorts.bottlenecks.key === 'pendingSubmissions' }">{{ sortArrow('bottlenecks', 'pendingSubmissions') }}</span>
+                            </th>
+                            <th class="sortable" @click="toggleSort('bottlenecks', 'jobCount')">
+                                Jobs <span class="sort-arrow" :class="{ active: sorts.bottlenecks.key === 'jobCount' }">{{ sortArrow('bottlenecks', 'jobCount') }}</span>
+                            </th>
+                            <th class="sortable" @click="toggleSort('bottlenecks', 'jobsStuck')">
+                                Stuck (36h+) <span class="sort-arrow" :class="{ active: sorts.bottlenecks.key === 'jobsStuck' }">{{ sortArrow('bottlenecks', 'jobsStuck') }}</span>
+                            </th>
+                            <th class="sortable" @click="toggleSort('bottlenecks', 'avgAge')">
+                                Avg Age (hours) <span class="sort-arrow" :class="{ active: sorts.bottlenecks.key === 'avgAge' }">{{ sortArrow('bottlenecks', 'avgAge') }}</span>
+                            </th>
                             <th>Vendors</th>
                         </tr>
                     </thead>
@@ -569,29 +577,35 @@ createApp({
                 bottlenecksSearch: '',
                 bottlenecksVendor: '',
                 bottlenecksStuckOnly: false,
-                sortOrder: 'descending',
             },
-            // Job Queue column sort; key null keeps the server's order.
-            jobSort: { key: null, dir: 'desc' },
+            // Column sort per table; key null keeps the server's order.
+            sorts: {
+                alerts: { key: null, dir: 'desc' },
+                reviews: { key: null, dir: 'desc' },
+                jobs: { key: null, dir: 'desc' },
+                bottlenecks: { key: 'avgAge', dir: 'desc' },
+            },
         };
     },
     computed: {
         filteredAlerts() {
-            return this.alerts.filter(alert => {
+            const filtered = this.alerts.filter(alert => {
                 const matchesSearch = alert.name.toLowerCase().includes(this.filters.alertsSearch.toLowerCase()) ||
                     alert.projectName.toLowerCase().includes(this.filters.alertsSearch.toLowerCase());
                 const matchesVendor = !this.filters.alertsVendor || alert.vendor === this.filters.alertsVendor;
                 return matchesSearch && matchesVendor;
             });
+            return this.sortRows('alerts', filtered);
         },
         filteredLateReviews() {
-            return this.lateReviews.filter(review => {
+            const filtered = this.lateReviews.filter(review => {
                 const matchesSearch = review.name.toLowerCase().includes(this.filters.reviewsSearch.toLowerCase()) ||
                     review.projectName.toLowerCase().includes(this.filters.reviewsSearch.toLowerCase());
                 const matchesVendor = !this.filters.reviewsVendor || review.vendor === this.filters.reviewsVendor;
                 const matchesSeverity = !this.filters.reviewsSeverity || review.severity === this.filters.reviewsSeverity;
                 return matchesSearch && matchesVendor && matchesSeverity;
             });
+            return this.sortRows('reviews', filtered);
         },
         filteredBottlenecks() {
             const filtered = this.bottlenecks.filter(bn => {
@@ -601,12 +615,7 @@ createApp({
                 return matchesSearch && matchesStuck && matchesVendor;
             });
 
-            filtered.sort((a, b) => {
-                const order = this.filters.sortOrder === 'ascending' ? 1 : -1;
-                return order * (a.avgAge - b.avgAge);
-            });
-
-            return filtered;
+            return this.sortRows('bottlenecks', filtered);
         },
         filteredJobs() {
             const filtered = this.jobs.filter(job => {
@@ -616,17 +625,7 @@ createApp({
                 const matchesStuck = !this.filters.stuckOnly || job.oldestSubmissionStuck;
                 return matchesSearch && matchesVendor && matchesStuck;
             });
-            const { key, dir } = this.jobSort;
-            if (!key) return filtered;
-            const order = dir === 'asc' ? 1 : -1;
-            // Jobs with no value (shown as —) always go last.
-            return filtered.slice().sort((a, b) => {
-                const av = a[key], bv = b[key];
-                const aMissing = av === null || av === undefined || av === '';
-                const bMissing = bv === null || bv === undefined || bv === '';
-                if (aMissing || bMissing) return aMissing - bMissing;
-                return order * (av - bv);
-            });
+            return this.sortRows('jobs', filtered);
         },
         totalPending() {
             return this.filteredJobs.reduce((sum, job) => sum + job.pendingCount, 0);
@@ -641,16 +640,32 @@ createApp({
         },
     },
     methods: {
-        toggleJobSort(key) {
-            if (this.jobSort.key === key) {
-                this.jobSort.dir = this.jobSort.dir === 'desc' ? 'asc' : 'desc';
+        // First click sorts highest first; clicking again flips it.
+        toggleSort(table, key) {
+            const sort = this.sorts[table];
+            if (sort.key === key) {
+                sort.dir = sort.dir === 'desc' ? 'asc' : 'desc';
             } else {
-                this.jobSort = { key, dir: 'desc' };
+                this.sorts[table] = { key, dir: 'desc' };
             }
         },
-        jobSortArrow(key) {
-            if (this.jobSort.key !== key) return '⇅';
-            return this.jobSort.dir === 'desc' ? '▼' : '▲';
+        sortArrow(table, key) {
+            const sort = this.sorts[table];
+            if (sort.key !== key) return '⇅';
+            return sort.dir === 'desc' ? '▼' : '▲';
+        },
+        sortRows(table, rows) {
+            const { key, dir } = this.sorts[table];
+            if (!key) return rows;
+            const order = dir === 'asc' ? 1 : -1;
+            // Rows with no value (shown as —) always go last.
+            return rows.slice().sort((a, b) => {
+                const av = a[key], bv = b[key];
+                const aMissing = av === null || av === undefined || av === '';
+                const bMissing = bv === null || bv === undefined || bv === '';
+                if (aMissing || bMissing) return aMissing - bMissing;
+                return order * (av - bv);
+            });
         },
         async fetchData() {
             this.loading = true;
